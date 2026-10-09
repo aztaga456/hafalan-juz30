@@ -1,0 +1,24 @@
+{
+  "name": "Generasi Cerdas Metode Ummi - Hafalan Juz 30 & Hadits Arba'in",
+  "short_name": "Juz 30 Ummi",
+  "description": "Aplikasi interaktif hafalan Al-Qur'an Juz 30 Metode Ummi dan 50 Hadits Arba'in An-Nawawi untuk santri dan anak ceria.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ecfdf5",
+  "theme_color": "#064e3b",
+  "icons": [
+    {
+      "src": "app-icon.jpg",
+      "sizes": "192x192 512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
