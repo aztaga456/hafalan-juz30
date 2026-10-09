@@ -67,28 +67,57 @@
   <!-- Firebase App & Auth Compatibility (Free Tier Auth Provider) -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-analytics-compat.js"></script>
   <script>
-    // Bridge Firebase Auth (Gratis tier untuk email reset & autentikasi)
-    window.__initFirebaseAuth = function(config) {
-      if (window.firebase && config) {
-        try {
-          if (!firebase.apps.length) {
-            firebase.initializeApp(config);
-          }
-          return firebase.auth();
-        } catch(e) {
-          console.warn("Firebase init:", e);
+    // Konfigurasi resmi Firebase Project Hafalan Juz 30
+    window.firebaseConfig = {
+      apiKey: "AIzaSyDWd05cOa9cGaKDA2A9TpV5nhoKEVu2rIU",
+      authDomain: "hafalanjuz30-1fd14.firebaseapp.com",
+      projectId: "hafalanjuz30-1fd14",
+      storageBucket: "hafalanjuz30-1fd14.firebasestorage.app",
+      messagingSenderId: "949623165765",
+      appId: "1:949623165765:web:ae25824e84f51873b1e42c",
+      measurementId: "G-GRB9FRH3HB"
+    };
+
+    window.__firebaseApp = null;
+    window.__firebaseAuth = null;
+    window.__firebaseAnalytics = null;
+
+    try {
+      if (typeof firebase !== 'undefined' && !firebase.apps.length) {
+        window.__firebaseApp = firebase.initializeApp(window.firebaseConfig);
+        window.__firebaseAuth = firebase.auth();
+        if (typeof firebase.analytics === 'function') {
+          try {
+            window.__firebaseAnalytics = firebase.analytics();
+          } catch (anErr) {}
         }
       }
-      return null;
-    };
+    } catch(err) {
+      console.warn("Firebase initialization warning:", err);
+    }
+
+    // Fungsi Pengiriman Email Reset Sandi Resmi Firebase Auth
     window.sendFirebasePasswordReset = async function(email) {
-      if (window.firebase && firebase.apps.length) {
+      if (typeof firebase !== 'undefined' && firebase.apps.length) {
         try {
-          await firebase.auth().sendPasswordResetEmail(email);
-          return { success: true, message: "Email reset kata sandi resmi telah dikirim ke " + email + ". Silakan periksa Kotak Masuk atau folder Spam." };
+          const auth = window.__firebaseAuth || firebase.auth();
+          await auth.sendPasswordResetEmail(email);
+          return {
+            success: true,
+            provider: 'firebase',
+            message: "Email reset kata sandi resmi telah dikirim ke " + email + ". Silakan periksa Kotak Masuk atau folder Spam email Anda."
+          };
         } catch(err) {
-          return { success: false, message: err.message || "Gagal mengirim email reset via Firebase." };
+          console.error("Firebase Password Reset Error:", err);
+          return {
+            success: false,
+            code: err.code,
+            message: err.code === 'auth/user-not-found'
+              ? "Email belum terdaftar di database Firebase. Menggunakan pemulihan sandi cadangan..."
+              : (err.message || "Gagal mengirim email reset via Firebase.")
+          };
         }
       }
       return { success: false, fallback: true };
@@ -2344,6 +2373,7 @@
       const [showForgotPassword, setShowForgotPassword] = useState(false);
       const [forgotEmail, setForgotEmail] = useState("");
       const [forgotSent, setForgotSent] = useState(false);
+      const [isFirebaseSent, setIsFirebaseSent] = useState(false);
       const [forgotMsg, setForgotMsg] = useState("");
       const [isSendingForgot, setIsSendingForgot] = useState(false);
       const [generatedTempPass, setGeneratedTempPass] = useState("");
@@ -2525,6 +2555,7 @@
       const handleForgotSubmit = async (e) => {
         e.preventDefault();
         setForgotMsg("");
+        setIsFirebaseSent(false);
         const cleanEmail = (forgotEmail || '').toLowerCase().trim();
         if (!cleanEmail) {
           setForgotMsg("Silakan masukkan email akun santri Anda.");
@@ -2540,6 +2571,7 @@
           if (window.sendFirebasePasswordReset) {
             const fbRes = await window.sendFirebasePasswordReset(cleanEmail);
             if (fbRes && fbRes.success) {
+              setIsFirebaseSent(true);
               setForgotSent(true);
               setForgotMsg(fbRes.message);
               return;
@@ -2757,21 +2789,31 @@
 
               {forgotSent ? (
                 <div className="space-y-4 animate-fade-in">
-                  <div className="bg-emerald-50 border-2 border-emerald-200 p-5 rounded-2xl text-center space-y-2">
+                  <div className="bg-emerald-50 border-2 border-emerald-300 p-5 rounded-2xl text-center space-y-2">
                     <div className="w-12 h-12 mx-auto bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center text-2xl font-black">
-                      ✉️
+                      {isFirebaseSent ? "🔥" : "✉️"}
                     </div>
+                    {isFirebaseSent && (
+                      <div className="inline-block bg-emerald-200 text-emerald-950 font-black text-[10px] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                        Resmi Firebase Auth
+                      </div>
+                    )}
                     <h4 className="font-black text-emerald-900 text-base">
-                      Tautan & Kata Sandi Berhasil Diproses!
+                      {isFirebaseSent ? "Email Reset Sandi Terkirim!" : "Tautan & Kata Sandi Berhasil Diproses!"}
                     </h4>
                     <p className="text-xs font-semibold text-emerald-800 leading-relaxed">
                       Pengaturan ulang kata sandi telah diproses untuk email:
                       <br />
                       <span className="font-extrabold text-emerald-950 underline break-all">{forgotEmail}</span>
                     </p>
+                    {isFirebaseSent && (
+                      <div className="text-[11px] text-slate-700 font-semibold bg-white/90 p-3 rounded-xl border border-emerald-200 text-left mt-2 leading-relaxed">
+                        💡 <b>Petunjuk:</b> Silakan buka kotak masuk email (atau folder spam) Anda, klik tautan dari Firebase untuk membuat kata sandi baru. Setelah disimpan, Anda dapat langsung masuk kembali ke aplikasi ini.
+                      </div>
+                    )}
                   </div>
 
-                  {/* KOTAK KATA SANDI SEMENTARA / ACAK */}
+                  {/* KOTAK KATA SANDI SEMENTARA / ACAK (Jika mode fallback) */}
                   {generatedTempPass && (
                     <div className="bg-amber-50 border-2 border-amber-300 p-4 rounded-2xl text-center space-y-2">
                       <div className="text-[11px] font-black text-amber-800 uppercase tracking-wide flex items-center justify-center gap-1">
@@ -2803,33 +2845,52 @@
                     </div>
                   )}
 
-                  {/* TOMBOL MASUK OTOMATIS (LINK MASUK LANGSUNG) */}
-                  <Button3D
-                    id="instantMagicLoginBtn"
-                    type="button"
-                    colorClass="green"
-                    className="w-full py-3.5 text-sm font-black shadow-md"
-                    onClick={() => {
-                      const cleanEmail = (forgotEmail || '').toLowerCase().trim();
-                      const userId = 'email_' + cleanEmail;
-                      let acc = null;
-                      try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
-                      if (!acc) {
-                        try { acc = JSON.parse(localStorage.getItem(`juz30_account_${cleanEmail}`) || 'null'); } catch(e){}
-                      }
-                      setShowForgotPassword(false);
-                      setForgotSent(false);
-                      setForgotEmail("");
-                      if (acc && acc.user) {
-                        onLoginSuccess('magic_' + Date.now(), acc.user, acc.progress || {}, acc.haditsProgress || {});
-                      } else {
-                        setEmail(cleanEmail);
-                        setPassword(generatedTempPass);
-                      }
-                    }}
-                  >
-                    Masuk Otomatis Sekarang 🚀
-                  </Button3D>
+                  {/* TOMBOL AKSI: MASUK OTOMATIS (LOKAL) ATAU KEMBALI KE LOGIN (FIREBASE) */}
+                  {generatedTempPass ? (
+                    <Button3D
+                      id="instantMagicLoginBtn"
+                      type="button"
+                      colorClass="green"
+                      className="w-full py-3.5 text-sm font-black shadow-md"
+                      onClick={() => {
+                        const cleanEmail = (forgotEmail || '').toLowerCase().trim();
+                        const userId = 'email_' + cleanEmail;
+                        let acc = null;
+                        try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
+                        if (!acc) {
+                          try { acc = JSON.parse(localStorage.getItem(`juz30_account_${cleanEmail}`) || 'null'); } catch(e){}
+                        }
+                        setShowForgotPassword(false);
+                        setForgotSent(false);
+                        setIsFirebaseSent(false);
+                        setForgotEmail("");
+                        if (acc && acc.user) {
+                          onLoginSuccess('magic_' + Date.now(), acc.user, acc.progress || {}, acc.haditsProgress || {});
+                        } else {
+                          setEmail(cleanEmail);
+                          setPassword(generatedTempPass);
+                        }
+                      }}
+                    >
+                      Masuk Otomatis Sekarang 🚀
+                    </Button3D>
+                  ) : (
+                    <Button3D
+                      id="backToLoginWithFirebaseBtn"
+                      type="button"
+                      colorClass="green"
+                      className="w-full py-3 text-sm font-black shadow-md"
+                      onClick={() => {
+                        setEmail(forgotEmail);
+                        setShowForgotPassword(false);
+                        setForgotSent(false);
+                        setIsFirebaseSent(false);
+                        setForgotEmail("");
+                      }}
+                    >
+                      Kembali ke Halaman Masuk 🚀
+                    </Button3D>
+                  )}
 
                   <div className="text-center pt-1">
                     <button
@@ -2840,6 +2901,7 @@
                         if (generatedTempPass) setPassword(generatedTempPass);
                         setShowForgotPassword(false);
                         setForgotSent(false);
+                        setIsFirebaseSent(false);
                         setForgotEmail("");
                       }}
                       className="text-xs font-bold text-slate-500 hover:text-slate-700 cursor-pointer"
