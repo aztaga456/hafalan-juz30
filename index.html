@@ -1788,29 +1788,31 @@
       const loadUserData = async (authToken) => {
         setLoading(true);
         try {
-          if (gasBridge.hasBackend()) {
-            const res = await gasBridge.call('apiGetMe', authToken);
-            if (res && res.success) {
-              setUserData(res.user);
-              setProgress(res.progress || {});
-              setCurrentView('dashboard');
-              setIsOfflineMode(false);
-              setLoading(false);
-              return;
-            }
+          const currentUserId = localStorage.getItem('juz30_current_userid');
+          const currentEmail = localStorage.getItem('juz30_current_email');
+          let accountData = null;
+          if (currentUserId) {
+            try { accountData = JSON.parse(localStorage.getItem(`juz30_account_uid_${currentUserId}`) || 'null'); } catch(e){}
           }
-          throw new Error("Sesi tidak ditemukan di server GAS");
-        } catch (err) {
-          const localUser = JSON.parse(localStorage.getItem('juz30_local_user') || 'null');
-          const localProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+          if (!accountData && currentEmail) {
+            try { accountData = JSON.parse(localStorage.getItem(`juz30_account_${currentEmail.toLowerCase()}`) || 'null'); } catch(e){}
+          }
+          const localUser = accountData?.user || JSON.parse(localStorage.getItem('juz30_local_user') || 'null');
+          const localProg = accountData?.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+          const localHadits = accountData?.haditsProgress || JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+
           if (localUser) {
             setUserData(localUser);
             setProgress(localProg);
+            setHaditsProgress(localHadits);
             setCurrentView('dashboard');
             setIsOfflineMode(true);
-          } else {
-            setCurrentView('login');
+            setLoading(false);
+            return;
           }
+          setCurrentView('login');
+        } catch (err) {
+          setCurrentView('login');
         } finally {
           setLoading(false);
         }
@@ -2038,14 +2040,6 @@
         setProgress(updated);
         localStorage.setItem('juz30_local_progress', JSON.stringify(updated));
         saveToActiveAccountStorage(null, updated, null);
-
-        if (gasBridge.hasBackend()) {
-          try {
-            gasBridge.call('apiSaveProgress', { token, userId: (userData?.userId || ('email_' + userData?.email)), email: userData?.email, surahId, ayahNum, status, timestamp }).catch(() => {});
-          } catch (err) {
-            console.error("Gagal sinkron progres ke server:", err);
-          }
-        }
       };
 
       const updateMultipleProgress = async (updates) => {
@@ -2057,14 +2051,6 @@
         setProgress(updated);
         localStorage.setItem('juz30_local_progress', JSON.stringify(updated));
         saveToActiveAccountStorage(null, updated, null);
-
-        if (gasBridge.hasBackend()) {
-          try {
-            gasBridge.call('apiSaveBulkProgress', { token, userId: (userData?.userId || ('email_' + userData?.email)), email: userData?.email, updates, timestamp: now }).catch(() => {});
-          } catch (err) {
-            console.error("Gagal sinkron progres borongan:", err);
-          }
-        }
       };
 
       if (loading) {
@@ -2707,7 +2693,17 @@
             if (isLogin) {
               const res = await gasBridge.call('apiLogin', { email, password });
               if (res && res.success) {
-                onLoginSuccess(res.token, res.user, res.progress, res.haditsProgress || {});
+                const cleanEmail = (email || '').toLowerCase().trim();
+                const userId = res.user.id || res.user.userId || ('email_' + cleanEmail);
+                let acc = null;
+                try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
+                if (!acc) {
+                  try { acc = JSON.parse(localStorage.getItem(`juz30_account_${cleanEmail}`) || 'null'); } catch(e){}
+                }
+                const savedProg = acc?.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+                const savedHadits = acc?.haditsProgress || JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+
+                onLoginSuccess(res.token, res.user, savedProg, savedHadits);
                 return;
               } else {
                 setError(res?.message || "Email atau kata sandi tidak cocok.");
@@ -2717,7 +2713,9 @@
             } else {
               const res = await gasBridge.call('apiRegister', { email, password, name, avatar, authProvider: 'email' });
               if (res && res.success) {
-                onLoginSuccess(res.token, res.user, res.progress, res.haditsProgress || {});
+                const savedProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+                const savedHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+                onLoginSuccess(res.token, res.user, savedProg, savedHadits);
                 return;
               } else {
                 setError(res?.message || "Pendaftaran gagal. Coba email lain.");

@@ -3,19 +3,18 @@
  * BACKEND GOOGLE APPS SCRIPT: Hafalan Juz 30 & Hadits Arba'in
  * Berkas    : Code.js (Code.gs)
  * Platform  : Google Apps Script (GAS)
- * Database  : Google Spreadsheet (Google Sheets) + PropertiesService
- * Fitur     : Autentikasi Santri, Hash Sandi SHA-256, Database Google Sheets,
- *             Penyimpanan Hafalan Ayat & Hadits, Reset Sandi & Magic Link
+ * Database  : Google Spreadsheet (Hanya Data User & Password Akun)
+ * Fungsi    : Menyimpan data pengguna & kata sandi di Google Sheets
+ *             untuk mengetahui user sudah terdaftar atau belum.
+ *             Data hafalan tetap disimpan di cache/internal device.
  * ====================================================================
  */
 
-// Nama-nama sheet di Google Spreadsheet
+// Nama tunggal sheet di Google Spreadsheet
 var SHEET_USERS = 'Santri_Users';
-var SHEET_AYAT = 'Santri_Ayat';
-var SHEET_HADITS = 'Santri_Hadits';
 
 /**
- * Mendapatkan atau menginisialisasi Google Spreadsheet sebagai Database
+ * Mendapatkan atau menginisialisasi Google Spreadsheet sebagai Database Akun
  */
 function getDatabaseSpreadsheet() {
   var props = PropertiesService.getScriptProperties();
@@ -26,11 +25,11 @@ function getDatabaseSpreadsheet() {
     try {
       ss = SpreadsheetApp.openById(sheetId);
     } catch (e) {
-      console.warn("Gagal membuka spreadsheet via ID tersimpan, mencoba cara lain:", e);
+      console.warn("Gagal membuka spreadsheet via ID tersimpan:", e);
     }
   }
 
-  // Jika script terikat langsung pada Google Sheet
+  // Jika script terikat langsung pada Google Sheet (Ekstensi -> Apps Script)
   if (!ss) {
     try {
       ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -40,10 +39,10 @@ function getDatabaseSpreadsheet() {
     } catch (e) {}
   }
 
-  // Jika belum ada spreadsheet yang terhubung, buat otomatis di Google Drive akun ini
+  // Jika belum ada, buat Spreadsheet baru otomatis di Google Drive
   if (!ss) {
     try {
-      ss = SpreadsheetApp.create('Database Hafalan Juz 30 & Hadits Arba\'in 🌟');
+      ss = SpreadsheetApp.create('Database Akun Santri Juz 30 🌟');
       props.setProperty('SPREADSHEET_ID', ss.getId());
       console.log("Berhasil membuat Spreadsheet baru: " + ss.getUrl());
     } catch (createErr) {
@@ -52,19 +51,18 @@ function getDatabaseSpreadsheet() {
   }
 
   if (ss) {
-    setupDatabaseTables(ss);
+    setupUserTable(ss);
   }
 
   return ss;
 }
 
 /**
- * Menginisialisasi Header tabel dan format visual jika belum ada
+ * Inisialisasi Header tabel Santri_Users jika belum ada
  */
-function setupDatabaseTables(ss) {
+function setupUserTable(ss) {
   if (!ss) return;
 
-  // 1. Sheet Users
   var sheetUsers = ss.getSheetByName(SHEET_USERS);
   if (!sheetUsers) {
     sheetUsers = ss.insertSheet(SHEET_USERS);
@@ -72,82 +70,25 @@ function setupDatabaseTables(ss) {
       'User ID',
       'Nama Santri',
       'Email',
-      'Avatar',
-      'Salt',
-      'Password Hash',
+      'Kata Sandi',
       'Kata Sandi Sementara',
+      'Avatar',
       'Auth Provider',
       'Tanggal Daftar',
       'Terakhir Aktif'
     ]);
-    formatHeaderRow(sheetUsers, 10);
-  }
 
-  // 2. Sheet Hafalan Ayat
-  var sheetAyat = ss.getSheetByName(SHEET_AYAT);
-  if (!sheetAyat) {
-    sheetAyat = ss.insertSheet(SHEET_AYAT);
-    sheetAyat.appendRow([
-      'User ID',
-      'Email',
-      'Surah ID',
-      'Ayat No',
-      'Item Key',
-      'Status',
-      'Timestamp'
-    ]);
-    formatHeaderRow(sheetAyat, 7);
+    try {
+      var range = sheetUsers.getRange(1, 1, 1, 9);
+      range.setBackground('#059669'); // Warna Hijau Zamrud
+      range.setFontColor('#ffffff');
+      range.setFontWeight('bold');
+      sheetUsers.setFrozenRows(1);
+      for (var c = 1; c <= 9; c++) {
+        sheetUsers.autoResizeColumn(c);
+      }
+    } catch (e) {}
   }
-
-  // 3. Sheet Hafalan Hadits
-  var sheetHadits = ss.getSheetByName(SHEET_HADITS);
-  if (!sheetHadits) {
-    sheetHadits = ss.insertSheet(SHEET_HADITS);
-    sheetHadits.appendRow([
-      'User ID',
-      'Email',
-      'Hadits ID',
-      'Status',
-      'Timestamp'
-    ]);
-    formatHeaderRow(sheetHadits, 5);
-  }
-}
-
-/**
- * Format baris header agar rapi dengan warna khas zamrud
- */
-function formatHeaderRow(sheet, colCount) {
-  try {
-    var range = sheet.getRange(1, 1, 1, colCount);
-    range.setBackground('#059669');
-    range.setFontColor('#ffffff');
-    range.setFontWeight('bold');
-    sheet.setFrozenRows(1);
-    for (var c = 1; c <= colCount; c++) {
-      sheet.autoResizeColumn(c);
-    }
-  } catch (e) {}
-}
-
-/**
- * Hash password dengan SHA-256 + Salt
- */
-function hashPassword(password, salt) {
-  var rawBytes = Utilities.computeDigest(
-    Utilities.DigestAlgorithm.SHA_256,
-    password + salt,
-    Utilities.Charset.UTF_8
-  );
-  var hex = '';
-  for (var i = 0; i < rawBytes.length; i++) {
-    var byteVal = rawBytes[i];
-    if (byteVal < 0) byteVal += 256;
-    var byteHex = byteVal.toString(16);
-    if (byteHex.length === 1) hex += '0';
-    hex += byteHex;
-  }
-  return hex;
 }
 
 function generateSessionToken(userId) {
@@ -172,7 +113,7 @@ function apiRegister(data) {
     var ss = getDatabaseSpreadsheet();
     var userSheet = ss ? ss.getSheetByName(SHEET_USERS) : null;
 
-    // Cek apakah email sudah terdaftar
+    // Cek apakah email sudah terdaftar di Google Sheets
     if (userSheet) {
       var dataValues = userSheet.getDataRange().getValues();
       for (var i = 1; i < dataValues.length; i++) {
@@ -183,33 +124,28 @@ function apiRegister(data) {
       }
     }
 
-    var salt = Utilities.getUuid().substring(0, 16);
-    var passwordHash = hashPassword(password, salt);
     var userId = 'id_' + new Date().getTime() + '_' + Math.floor(Math.random() * 10000);
     var nowIso = new Date().toISOString();
 
-    // Simpan ke Google Sheets
+    // Simpan data user & password ke baris Google Sheets
     if (userSheet) {
       userSheet.appendRow([
         userId,
         name,
         email,
+        password,
+        '', // kata sandi sementara kosong awal
         avatar,
-        salt,
-        passwordHash,
-        '', // temp password
         authProvider,
         nowIso,
         nowIso
       ]);
     }
 
-    // Backup ke PropertiesService untuk kecepatan ekstra
-    var props = PropertiesService.getScriptProperties();
-    props.setProperty('idmap_' + userId, email);
-
     var token = generateSessionToken(userId);
+    var props = PropertiesService.getScriptProperties();
     props.setProperty('sess_' + token, userId);
+    props.setProperty('idmap_' + userId, email);
 
     return {
       success: true,
@@ -221,9 +157,7 @@ function apiRegister(data) {
         email: email,
         avatar: avatar,
         authProvider: authProvider
-      },
-      progress: {},
-      haditsProgress: {}
+      }
     };
   } catch (err) {
     return { success: false, message: 'Gagal mendaftar: ' + err.message };
@@ -231,7 +165,7 @@ function apiRegister(data) {
 }
 
 /**
- * API: Login Santri via Google Sheets
+ * API: Login Santri - Verifikasi email & password dari Google Sheets
  */
 function apiLogin(data) {
   try {
@@ -245,7 +179,7 @@ function apiLogin(data) {
     var ss = getDatabaseSpreadsheet();
     var userSheet = ss ? ss.getSheetByName(SHEET_USERS) : null;
     if (!userSheet) {
-      return { success: false, message: 'Database belum siap. Silakan coba sesaat lagi.' };
+      return { success: false, message: 'Database Spreadsheet belum siap.' };
     }
 
     var dataValues = userSheet.getDataRange().getValues();
@@ -255,67 +189,36 @@ function apiLogin(data) {
     for (var i = 1; i < dataValues.length; i++) {
       var rowEmail = (dataValues[i][2] || '').toString().toLowerCase().trim();
       if (rowEmail === email) {
-        userRowIdx = i + 1; // 1-based row index
+        userRowIdx = i + 1;
         userRow = dataValues[i];
         break;
       }
     }
 
     if (!userRow) {
-      return { success: false, message: 'Akun Anda belum terdaftar di aplikasi. Silakan periksa kembali email Anda atau buat akun baru terlebih dahulu.' };
+      return {
+        success: false,
+        message: 'Akun Anda belum terdaftar di aplikasi. Silakan periksa kembali email Anda atau buat akun baru terlebih dahulu.'
+      };
     }
 
     var userId = userRow[0];
     var userName = userRow[1];
-    var userAvatar = userRow[3];
-    var salt = userRow[4];
-    var storedHash = userRow[5];
-    var tempPassword = userRow[6];
+    var storedPassword = (userRow[3] || '').toString();
+    var tempPassword = (userRow[4] || '').toString();
+    var userAvatar = userRow[5];
 
-    var testHash = hashPassword(password, salt);
-    var isPasswordMatch = (testHash === storedHash);
+    var isPasswordMatch = (password === storedPassword);
     var isTempPasswordMatch = (tempPassword && password === tempPassword);
 
     if (!isPasswordMatch && !isTempPasswordMatch) {
-      return { success: false, message: 'Kata sandi tidak sesuai. Silakan periksa kembali.' };
+      return { success: false, message: 'Kata sandi salah. Silakan periksa kembali.' };
     }
 
-    // Perbarui waktu Terakhir Aktif
+    // Perbarui waktu Terakhir Aktif di kolom 9
     try {
-      userSheet.getRange(userRowIdx, 10).setValue(new Date().toISOString());
+      userSheet.getRange(userRowIdx, 9).setValue(new Date().toISOString());
     } catch (e) {}
-
-    // Ambil progres hafalan ayat dari sheet Santri_Ayat
-    var progress = {};
-    var ayatSheet = ss.getSheetByName(SHEET_AYAT);
-    if (ayatSheet) {
-      var ayatData = ayatSheet.getDataRange().getValues();
-      for (var a = 1; a < ayatData.length; a++) {
-        if (ayatData[a][0] === userId || (ayatData[a][1] || '').toString().toLowerCase().trim() === email) {
-          var itemKey = ayatData[a][4];
-          progress[itemKey] = {
-            status: ayatData[a][5],
-            timestamp: ayatData[a][6] || Date.now()
-          };
-        }
-      }
-    }
-
-    // Ambil progres hadits dari sheet Santri_Hadits
-    var haditsProgress = {};
-    var haditsSheet = ss.getSheetByName(SHEET_HADITS);
-    if (haditsSheet) {
-      var haditsData = haditsSheet.getDataRange().getValues();
-      for (var h = 1; h < haditsData.length; h++) {
-        if (haditsData[h][0] === userId || (haditsData[h][1] || '').toString().toLowerCase().trim() === email) {
-          var haditsId = haditsData[h][2];
-          haditsProgress[haditsId] = {
-            status: haditsData[h][3],
-            timestamp: haditsData[h][4] || Date.now()
-          };
-        }
-      }
-    }
 
     var token = generateSessionToken(userId);
     var props = PropertiesService.getScriptProperties();
@@ -331,9 +234,7 @@ function apiLogin(data) {
         name: userName,
         email: email,
         avatar: userAvatar
-      },
-      progress: progress,
-      haditsProgress: haditsProgress
+      }
     };
   } catch (err) {
     return { success: false, message: 'Gagal masuk: ' + err.message };
@@ -341,7 +242,7 @@ function apiLogin(data) {
 }
 
 /**
- * API: Cek apakah email terdaftar (Validasi Lupa Kata Sandi)
+ * API: Cek apakah user sudah terdaftar di Google Sheets
  */
 function apiCheckUser(data) {
   try {
@@ -363,7 +264,7 @@ function apiCheckUser(data) {
             id: dataValues[i][0],
             name: dataValues[i][1],
             email: rowEmail,
-            avatar: dataValues[i][3]
+            avatar: dataValues[i][5]
           }
         };
       }
@@ -375,7 +276,7 @@ function apiCheckUser(data) {
 }
 
 /**
- * API: Lupa Kata Sandi (Solusi Nomor 1: Buat Sandi Sementara & Kirim Email)
+ * API: Lupa Kata Sandi - Buat sandi sementara & update Google Sheets
  */
 function apiForgotPassword(data) {
   try {
@@ -417,32 +318,28 @@ function apiForgotPassword(data) {
     var randomCode = Math.floor(1000 + Math.random() * 9000);
     var tempPassword = 'Juz30-' + randomCode;
 
-    // 2. Simpan sandi sementara di kolom 'Kata Sandi Sementara' (kolom 7)
-    userSheet.getRange(userRowIdx, 7).setValue(tempPassword);
+    // 2. Simpan di kolom 'Kata Sandi Sementara' (kolom 5)
+    userSheet.getRange(userRowIdx, 5).setValue(tempPassword);
 
-    // 3. Tautan Masuk Otomatis (Magic Link)
+    // 3. Tautan Masuk Otomatis
     var appUrl = 'https://hafalan-juz30-two.vercel.app';
     var magicLoginUrl = appUrl + '?quick_login=true&email=' + encodeURIComponent(email) + '&key=' + encodeURIComponent(tempPassword);
 
-    // 4. Kirim notifikasi email via Gmail (opsional background)
+    // 4. Kirim notifikasi via Gmail (jika MailApp aktif)
     try {
       if (typeof MailApp !== 'undefined') {
         var htmlContent = ''
-          + '<div style="font-family: Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">'
-          + '  <div style="text-align: center; margin-bottom: 20px;">'
-          + '    <h1 style="color: #059669; margin: 0; font-size: 22px;">Generasi Cerdas • Metode Ummi 🌟</h1>'
-          + '    <p style="color: #64748b; font-size: 13px; margin: 4px 0 0 0;">Hafalan Al-Qur\'an Juz 30 & Hadits Arba\'in</p>'
+          + '<div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 14px; background-color: #ffffff;">'
+          + '  <h2 style="color: #059669; text-align: center; margin-top: 0;">Generasi Cerdas • Metode Ummi 🌟</h2>'
+          + '  <p style="font-size: 14px; color: #334155;">Assalamu\'alaikum <b>' + (userName || 'Sahabat') + '</b>,</p>'
+          + '  <p style="font-size: 14px; color: #334155;">Berikut adalah kata sandi sementara akun santri Anda:</p>'
+          + '  <div style="background-color: #f0fdf4; border: 2px dashed #10b981; border-radius: 10px; padding: 14px; text-align: center; margin: 16px 0;">'
+          + '    <span style="font-size: 24px; font-weight: bold; color: #065f46; letter-spacing: 2px; font-family: monospace;">' + tempPassword + '</span>'
           + '  </div>'
-          + '  <p style="font-size: 14px; color: #334155;">Assalamu\'alaikum <b>' + (userName || 'Sahabat Cilik') + '</b>,</p>'
-          + '  <p style="font-size: 14px; color: #334155; line-height: 1.6;">Kata sandi sementara akun santri Anda telah berhasil dibuat:</p>'
-          + '  <div style="background-color: #f0fdf4; border: 2px dashed #10b981; border-radius: 12px; padding: 16px; text-align: center; margin: 20px 0;">'
-          + '    <span style="font-size: 11px; color: #047857; text-transform: uppercase; font-weight: bold; display: block; margin-bottom: 6px;">Kata Sandi Sementara Anda:</span>'
-          + '    <span style="font-size: 26px; font-weight: 900; letter-spacing: 2px; color: #065f46; font-family: monospace;">' + tempPassword + '</span>'
+          + '  <div style="text-align: center; margin: 18px 0;">'
+          + '    <a href="' + magicLoginUrl + '" style="background-color: #059669; color: #ffffff; padding: 10px 20px; border-radius: 8px; font-weight: bold; text-decoration: none; display: inline-block;">Masuk Otomatis Sekarang 🚀</a>'
           + '  </div>'
-          + '  <div style="text-align: center; margin: 20px 0;">'
-          + '    <a href="' + magicLoginUrl + '" style="background-color: #059669; color: #ffffff; padding: 12px 24px; border-radius: 10px; font-weight: bold; text-decoration: none; display: inline-block; font-size: 14px;">Masuk Otomatis ke Aplikasi 🚀</a>'
-          + '  </div>'
-          + '  <p style="font-size: 12px; color: #64748b;">Anda dapat mengganti kata sandi ini kapan saja di menu profil akun Anda.</p>'
+          + '  <p style="font-size: 12px; color: #64748b;">Kata sandi ini dapat diubah di menu profil setelah Anda masuk.</p>'
           + '</div>';
 
         MailApp.sendEmail({
@@ -468,124 +365,7 @@ function apiForgotPassword(data) {
 }
 
 /**
- * API: Simpan Progres Ayat ke Google Sheets
- */
-function apiSaveProgress(data) {
-  try {
-    var userId = data.userId;
-    var email = (data.email || '').toLowerCase().trim();
-    var surahId = data.surahId;
-    var ayahNum = data.ayahNum;
-    var status = data.status;
-    var timestamp = data.timestamp || Date.now();
-    var itemKey = surahId + '_' + ayahNum;
-
-    var ss = getDatabaseSpreadsheet();
-    var ayatSheet = ss ? ss.getSheetByName(SHEET_AYAT) : null;
-    if (!ayatSheet) return { success: false, message: 'Sheet tidak tersedia.' };
-
-    var dataValues = ayatSheet.getDataRange().getValues();
-    var foundRowIdx = -1;
-
-    for (var i = 1; i < dataValues.length; i++) {
-      if ((dataValues[i][0] === userId || dataValues[i][1] === email) && dataValues[i][4] === itemKey) {
-        foundRowIdx = i + 1;
-        break;
-      }
-    }
-
-    if (foundRowIdx > 0) {
-      ayatSheet.getRange(foundRowIdx, 6).setValue(status);
-      ayatSheet.getRange(foundRowIdx, 7).setValue(timestamp);
-    } else {
-      ayatSheet.appendRow([userId, email, surahId, ayahNum, itemKey, status, timestamp]);
-    }
-
-    return { success: true, key: itemKey, status: status };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-}
-
-/**
- * API: Simpan Progres Borongan Ayat
- */
-function apiSaveBulkProgress(data) {
-  try {
-    var userId = data.userId;
-    var email = (data.email || '').toLowerCase().trim();
-    var updates = data.updates || [];
-    var timestamp = data.timestamp || Date.now();
-
-    var ss = getDatabaseSpreadsheet();
-    var ayatSheet = ss ? ss.getSheetByName(SHEET_AYAT) : null;
-    if (!ayatSheet) return { success: false };
-
-    var dataValues = ayatSheet.getDataRange().getValues();
-    var rowMap = {};
-    for (var i = 1; i < dataValues.length; i++) {
-      if (dataValues[i][0] === userId || dataValues[i][1] === email) {
-        rowMap[dataValues[i][4]] = i + 1;
-      }
-    }
-
-    for (var u = 0; u < updates.length; u++) {
-      var item = updates[u];
-      var itemKey = item.surahId + '_' + item.ayahNum;
-      if (rowMap[itemKey]) {
-        ayatSheet.getRange(rowMap[itemKey], 6).setValue(item.status);
-        ayatSheet.getRange(rowMap[itemKey], 7).setValue(timestamp);
-      } else {
-        ayatSheet.appendRow([userId, email, item.surahId, item.ayahNum, itemKey, item.status, timestamp]);
-      }
-    }
-
-    return { success: true, count: updates.length };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-}
-
-/**
- * API: Simpan Progres Hadits ke Google Sheets
- */
-function apiSaveHaditsProgress(data) {
-  try {
-    var userId = data.userId;
-    var email = (data.email || '').toLowerCase().trim();
-    var haditsId = data.haditsId;
-    var status = data.status;
-    var timestamp = data.timestamp || Date.now();
-
-    var ss = getDatabaseSpreadsheet();
-    var haditsSheet = ss ? ss.getSheetByName(SHEET_HADITS) : null;
-    if (!haditsSheet) return { success: false };
-
-    var dataValues = haditsSheet.getDataRange().getValues();
-    var foundRowIdx = -1;
-
-    for (var i = 1; i < dataValues.length; i++) {
-      if ((dataValues[i][0] === userId || dataValues[i][1] === email) && dataValues[i][2] == haditsId) {
-        foundRowIdx = i + 1;
-        break;
-      }
-    }
-
-    if (foundRowIdx > 0) {
-      haditsSheet.getRange(foundRowIdx, 4).setValue(status);
-      haditsSheet.getRange(foundRowIdx, 5).setValue(timestamp);
-    } else {
-      haditsSheet.appendRow([userId, email, haditsId, status, timestamp]);
-    }
-
-    return { success: true, haditsId: haditsId, status: status };
-  } catch (err) {
-    return { success: false, message: err.message };
-  }
-}
-
-/**
- * API: Perbarui Profil Santri di Google Sheets
+ * API: Update Profil di Google Sheets (Nama, Avatar, atau Sandi Baru)
  */
 function apiUpdateProfile(data) {
   try {
@@ -611,15 +391,12 @@ function apiUpdateProfile(data) {
 
     if (userRowIdx > 0) {
       if (name) userSheet.getRange(userRowIdx, 2).setValue(name);
-      if (avatar) userSheet.getRange(userRowIdx, 4).setValue(avatar);
+      if (avatar) userSheet.getRange(userRowIdx, 6).setValue(avatar);
       if (newPassword) {
-        var salt = Utilities.getUuid().substring(0, 16);
-        var passwordHash = hashPassword(newPassword, salt);
-        userSheet.getRange(userRowIdx, 5).setValue(salt);
-        userSheet.getRange(userRowIdx, 6).setValue(passwordHash);
-        userSheet.getRange(userRowIdx, 7).setValue(''); // bersihkan sandi sementara
+        userSheet.getRange(userRowIdx, 4).setValue(newPassword);
+        userSheet.getRange(userRowIdx, 5).setValue(''); // bersihkan sandi sementara
       }
-      userSheet.getRange(userRowIdx, 10).setValue(new Date().toISOString());
+      userSheet.getRange(userRowIdx, 9).setValue(new Date().toISOString());
 
       return { success: true, name: name, avatar: avatar };
     }
@@ -630,13 +407,10 @@ function apiUpdateProfile(data) {
   }
 }
 
-/**
- * Handler HTTP GET: Bisa untuk pratinjau Web App atau Ping API
- */
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
     var act = e.parameter.action;
-    var res = { success: true, message: 'Google Apps Script Database Aktif 🚀' };
+    var res = { success: true, message: 'Google Apps Script Database Akun Aktif 🚀' };
     if (act === 'ping') res = { success: true, timestamp: new Date().toISOString() };
     else if (act === 'checkUser') res = apiCheckUser(e.parameter);
 
@@ -650,9 +424,6 @@ function doGet(e) {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1.0');
 }
 
-/**
- * Handler HTTP POST: Menerima permintaan REST API dari Vercel / Web
- */
 function doPost(e) {
   try {
     var content = {};
@@ -674,9 +445,6 @@ function doPost(e) {
     else if (action === 'login' || action === 'apilogin') responseData = apiLogin(payload);
     else if (action === 'checkuser' || action === 'apicheckuser') responseData = apiCheckUser(payload);
     else if (action === 'forgotpassword' || action === 'apiforgotpassword') responseData = apiForgotPassword(payload);
-    else if (action === 'saveprogress' || action === 'apisaveprogress') responseData = apiSaveProgress(payload);
-    else if (action === 'savebulk' || action === 'apisavebulkprogress') responseData = apiSaveBulkProgress(payload);
-    else if (action === 'savehaditsprogress' || action === 'apisavehaditsprogress') responseData = apiSaveHaditsProgress(payload);
     else if (action === 'updateprofile' || action === 'apiupdateprofile') responseData = apiUpdateProfile(payload);
 
     return ContentService.createTextOutput(JSON.stringify(responseData))
