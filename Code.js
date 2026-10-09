@@ -184,13 +184,55 @@ function apiForgotPassword(data) {
       return { success: false, message: 'Email tidak ditemukan di sistem. Pastikan email terdaftar.' };
     }
 
-    // Mengirim email tautan reset kata sandi
+    var user = JSON.parse(userRaw);
+
+    // 1. Buat kata sandi acak sementara (contoh: Juz30-8492)
+    var randomCode = Math.floor(1000 + Math.random() * 9000);
+    var tempPassword = 'Juz30-' + randomCode;
+
+    // 2. Perbarui kata sandi pengguna dengan sandi sementara
+    user.salt = Utilities.getUuid().substring(0, 16);
+    user.passwordHash = hashPassword(tempPassword, user.salt);
+    props.setProperty('usr_' + email, JSON.stringify(user));
+
+    // 3. Buat tautan masuk otomatis (Magic Link)
+    var appUrl = 'https://hafalan-juz30-two.vercel.app';
+    try {
+      if (typeof ScriptApp !== 'undefined' && ScriptApp.getService()) {
+        appUrl = ScriptApp.getService().getUrl() || appUrl;
+      }
+    } catch (e) {}
+
+    var magicLoginUrl = appUrl + '?quick_login=true&email=' + encodeURIComponent(email) + '&key=' + encodeURIComponent(tempPassword);
+
+    // 4. Kirim email nyata ke akun Gmail pengguna
     try {
       if (typeof MailApp !== 'undefined') {
+        var htmlContent = ''
+          + '<div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">'
+          + '  <div style="text-align: center; margin-bottom: 20px;">'
+          + '    <h1 style="color: #059669; margin: 0; font-size: 22px;">Generasi Cerdas • Metode Ummi 🌟</h1>'
+          + '    <p style="color: #64748b; font-size: 13px; margin: 4px 0 0 0;">Hafalan Al-Qur\'an Juz 30 & Hadits Arba\'in</p>'
+          + '  </div>'
+          + '  <p style="font-size: 14px; color: #334155;">Assalamu\'alaikum <b>' + (user.name || 'Sahabat Cilik') + '</b>,</p>'
+          + '  <p style="font-size: 14px; color: #334155; line-height: 1.6;">Kami menerima permintaan pengaturan ulang kata sandi untuk akun santri Anda. Kami telah membuatkan <b>kata sandi sementara</b> berikut agar Anda dapat langsung masuk:</p>'
+          + '  <div style="background-color: #f0fdf4; border: 2px dashed #10b981; border-radius: 12px; padding: 16px; text-align: center; margin: 20px 0;">'
+          + '    <span style="font-size: 12px; color: #047857; text-transform: uppercase; font-weight: bold; display: block; margin-bottom: 6px;">Kata Sandi Sementara Anda:</span>'
+          + '    <span style="font-size: 26px; font-weight: 900; letter-spacing: 2px; color: #065f46; font-family: monospace;">' + tempPassword + '</span>'
+          + '  </div>'
+          + '  <div style="text-align: center; margin: 24px 0;">'
+          + '    <a href="' + magicLoginUrl + '" style="background-color: #059669; color: #ffffff; padding: 12px 24px; border-radius: 10px; font-weight: bold; text-decoration: none; display: inline-block; font-size: 14px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">Masuk Otomatis ke Aplikasi 🚀</a>'
+          + '  </div>'
+          + '  <p style="font-size: 12px; color: #64748b; line-height: 1.5;"><b>💡 Tips Keamanan:</b> Setelah berhasil masuk, Anda dapat langsung mengganti kata sandi ini dengan sandi baru sesuai keinginan Anda melalui menu <b>Pengaturan Profil (Edit Profil)</b>.</p>'
+          + '  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />'
+          + '  <p style="font-size: 11px; color: #94a3b8; text-align: center;">Jika Anda tidak merasa meminta reset kata sandi ini, silakan abaikan email ini.</p>'
+          + '</div>';
+
         MailApp.sendEmail({
           to: email,
-          subject: 'Reset Kata Sandi Akun Hafalan Juz 30 Ceria 🌟',
-          body: 'Assalamu\'alaikum,\n\nKami menerima permintaan untuk mereset kata sandi akun santri Anda di aplikasi Hafalan Juz 30 Ceria.\n\nSilakan gunakan tautan berikut untuk membuat kata sandi baru atau masuk kembali ke aplikasi.\n\nJika ini bukan Anda, abaikan email ini.\n\nWassalam,\nTim Hafalan Juz 30'
+          subject: '🔑 Kata Sandi Baru & Tautan Masuk Akun Hafalan Juz 30',
+          htmlBody: htmlContent,
+          body: 'Assalamu\'alaikum ' + (user.name || 'Sahabat') + ',\n\nKata sandi sementara akun Anda adalah: ' + tempPassword + '\n\nAtau klik tautan berikut untuk masuk otomatis:\n' + magicLoginUrl + '\n\nSegera ubah kata sandi di menu profil setelah berhasil masuk.'
         });
       }
     } catch (mailErr) {
@@ -199,7 +241,9 @@ function apiForgotPassword(data) {
 
     return {
       success: true,
-      message: 'Instruksi dan tautan reset kata sandi telah dikirimkan ke ' + email
+      tempPassword: tempPassword,
+      magicLoginUrl: magicLoginUrl,
+      message: 'Kata sandi sementara dan tautan masuk telah dikirimkan ke ' + email
     };
   } catch (err) {
     return { success: false, message: 'Gagal mengirim email reset: ' + err.message };
@@ -314,6 +358,7 @@ function doPost(e) {
     else if (action === 'saveProgress') responseData = apiSaveProgress(payload);
     else if (action === 'saveBulk') responseData = apiSaveBulkProgress(payload);
     else if (action === 'updateProfile') responseData = apiUpdateProfile(payload);
+    else if (action === 'forgotPassword') responseData = apiForgotPassword(payload);
 
     return ContentService.createTextOutput(JSON.stringify(responseData))
       .setMimeType(ContentService.MimeType.JSON);

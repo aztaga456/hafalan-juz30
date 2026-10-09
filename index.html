@@ -1723,6 +1723,29 @@
       };
 
       useEffect(() => {
+        // Cek apakah ada parameter URL untuk auto-login / magic link (quick_login)
+        try {
+          const urlParams = new URLSearchParams(window.location.search);
+          if (urlParams.get('quick_login') === 'true') {
+            const qEmail = (urlParams.get('email') || '').toLowerCase().trim();
+            const qKey = urlParams.get('key');
+            if (qEmail && qKey) {
+              const storageKey = `juz30_account_${qEmail}`;
+              let acc = null;
+              try { acc = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch(e){}
+              if (acc && acc.user) {
+                acc.user.password = qKey;
+                localStorage.setItem(storageKey, JSON.stringify(acc));
+                window.history.replaceState({}, document.title, window.location.pathname);
+                handleLoginSuccess('magic_' + Date.now(), acc.user, acc.progress || {}, acc.haditsProgress || {});
+                showToast("Berhasil masuk via tautan cepat! Silakan atur kata sandi baru Anda di profil 🔑");
+                setIsEditProfileOpen(true);
+                return;
+              }
+            }
+          }
+        } catch (e) {}
+
         if (token) {
           loadUserData(token);
         } else {
@@ -2259,6 +2282,9 @@
       const [forgotSent, setForgotSent] = useState(false);
       const [forgotMsg, setForgotMsg] = useState("");
       const [isSendingForgot, setIsSendingForgot] = useState(false);
+      const [generatedTempPass, setGeneratedTempPass] = useState("");
+      const [generatedMagicLink, setGeneratedMagicLink] = useState("");
+      const [copiedPass, setCopiedPass] = useState(false);
 
       // State untuk Popup Awal Konfirmasi Profil Google (Nama & Foto)
       const [googleConfirmUser, setGoogleConfirmUser] = useState(null);
@@ -2418,7 +2444,7 @@
         );
       };
 
-      // Handler kirim link reset password
+      // Handler kirim link & kata sandi acak reset password
       const handleForgotSubmit = async (e) => {
         e.preventDefault();
         setForgotMsg("");
@@ -2430,20 +2456,52 @@
 
         setIsSendingForgot(true);
         try {
+          let tempPass = "";
+          let magicUrl = "";
+
           if (gasBridge.isGAS) {
             const res = await gasBridge.call('apiForgotPassword', { email: cleanEmail });
             if (res && res.success) {
+              tempPass = res.tempPassword || "";
+              magicUrl = res.magicLoginUrl || "";
+              setGeneratedTempPass(tempPass);
+              setGeneratedMagicLink(magicUrl);
               setForgotSent(true);
             } else {
               setForgotMsg(res?.message || "Email tidak ditemukan atau gagal dikirim.");
             }
           } else {
-            // Standalone mode / browser PWA mode
-            await new Promise(r => setTimeout(r, 600));
+            // Standalone mode / browser PWA mode / Vercel
+            const storageKey = `juz30_account_${cleanEmail}`;
+            let accountData = null;
+            try {
+              accountData = JSON.parse(localStorage.getItem(storageKey) || 'null');
+            } catch (e) {}
+
+            if (!accountData) {
+              setForgotMsg("Email belum terdaftar di aplikasi. Silakan periksa kembali email Anda.");
+              setIsSendingForgot(false);
+              return;
+            }
+
+            // 1. Buat Kata Sandi Acak Sementara (format misal: Juz30-8492)
+            const randomCode = Math.floor(1000 + Math.random() * 9000);
+            tempPass = `Juz30-${randomCode}`;
+
+            // 2. Perbarui kata sandi di akun santri
+            accountData.user.password = tempPass;
+            localStorage.setItem(storageKey, JSON.stringify(accountData));
+
+            // 3. Buat tautan login otomatis (Magic Link)
+            const baseUrl = window.location.origin + window.location.pathname;
+            magicUrl = `${baseUrl}?quick_login=true&email=${encodeURIComponent(cleanEmail)}&key=${encodeURIComponent(tempPass)}`;
+
+            setGeneratedTempPass(tempPass);
+            setGeneratedMagicLink(magicUrl);
             setForgotSent(true);
           }
         } catch (err) {
-          setForgotMsg("Gagal mengirim email reset kata sandi. Silakan coba kembali.");
+          setForgotMsg("Gagal memproses reset kata sandi. Silakan coba kembali.");
         } finally {
           setIsSendingForgot(false);
         }
@@ -2541,36 +2599,93 @@
 
               {forgotSent ? (
                 <div className="space-y-4 animate-fade-in">
-                  <div className="bg-emerald-50 border-2 border-emerald-200 p-5 rounded-2xl text-center space-y-2.5">
+                  <div className="bg-emerald-50 border-2 border-emerald-200 p-5 rounded-2xl text-center space-y-2">
                     <div className="w-12 h-12 mx-auto bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center text-2xl font-black">
                       ✉️
                     </div>
                     <h4 className="font-black text-emerald-900 text-base">
-                      Tautan Reset Telah Dikirim!
+                      Tautan & Kata Sandi Berhasil Dibuat!
                     </h4>
                     <p className="text-xs font-semibold text-emerald-800 leading-relaxed">
-                      Instruksi dan tautan reset kata sandi telah dikirimkan ke email:
+                      Pengaturan ulang kata sandi telah diproses untuk email:
                       <br />
                       <span className="font-extrabold text-emerald-950 underline break-all">{forgotEmail}</span>
                     </p>
-                    <p className="text-[11px] text-slate-500 font-medium pt-1">
-                      Silakan buka email Anda dan periksa kotak masuk (Inbox) atau folder Spam.
-                    </p>
                   </div>
 
+                  {/* KOTAK KATA SANDI SEMENTARA / ACAK */}
+                  {generatedTempPass && (
+                    <div className="bg-amber-50 border-2 border-amber-300 p-4 rounded-2xl text-center space-y-2">
+                      <div className="text-[11px] font-black text-amber-800 uppercase tracking-wide flex items-center justify-center gap-1">
+                        <span>🔑 Kata Sandi Acak Sementara Anda:</span>
+                      </div>
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="font-mono text-xl sm:text-2xl font-black text-amber-950 bg-white px-4 py-1.5 rounded-xl border border-amber-200 select-all shadow-inner tracking-wider">
+                          {generatedTempPass}
+                        </span>
+                        <button
+                          id="copyTempPassBtn"
+                          type="button"
+                          onClick={() => {
+                            if (navigator.clipboard) {
+                              navigator.clipboard.writeText(generatedTempPass);
+                            }
+                            setCopiedPass(true);
+                            setTimeout(() => setCopiedPass(false), 2000);
+                          }}
+                          className="px-3.5 py-2 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded-xl text-xs font-black transition active:scale-95 cursor-pointer shadow-xs"
+                          title="Salin Kata Sandi"
+                        >
+                          {copiedPass ? "✓ Tersalin!" : "📋 Salin"}
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-amber-900 font-bold leading-relaxed">
+                        Gunakan kata sandi ini untuk login. Anda dapat langsung menggantinya di menu <b>Pengaturan Profil (Edit Profil)</b> setelah masuk.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* TOMBOL MASUK OTOMATIS (LINK MASUK LANGSUNG) */}
                   <Button3D
-                    id="backToLoginAfterSentBtn"
+                    id="instantMagicLoginBtn"
                     type="button"
                     colorClass="green"
                     className="w-full py-3.5 text-sm font-black shadow-md"
                     onClick={() => {
+                      const cleanEmail = (forgotEmail || '').toLowerCase().trim();
+                      const storageKey = `juz30_account_${cleanEmail}`;
+                      let acc = null;
+                      try { acc = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch(e){}
                       setShowForgotPassword(false);
                       setForgotSent(false);
                       setForgotEmail("");
+                      if (acc && acc.user) {
+                        onLoginSuccess('magic_' + Date.now(), acc.user, acc.progress || {}, acc.haditsProgress || {});
+                      } else {
+                        setEmail(cleanEmail);
+                        setPassword(generatedTempPass);
+                      }
                     }}
                   >
-                    Kembali ke Halaman Masuk 🚀
+                    Masuk Otomatis Sekarang 🚀
                   </Button3D>
+
+                  <div className="text-center pt-1">
+                    <button
+                      id="backToLoginAfterSentBtn"
+                      type="button"
+                      onClick={() => {
+                        setEmail(forgotEmail);
+                        if (generatedTempPass) setPassword(generatedTempPass);
+                        setShowForgotPassword(false);
+                        setForgotSent(false);
+                        setForgotEmail("");
+                      }}
+                      className="text-xs font-bold text-slate-500 hover:text-slate-700 cursor-pointer"
+                    >
+                      ← Buka Form Masuk Biasa
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <form onSubmit={handleForgotSubmit} className="space-y-4">
