@@ -64,6 +64,36 @@
   <script src="hadits-data.js"></script>
   <!-- Google Identity Services (Sign In with Google) -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <!-- Firebase App & Auth Compatibility (Free Tier Auth Provider) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script>
+    // Bridge Firebase Auth (Gratis tier untuk email reset & autentikasi)
+    window.__initFirebaseAuth = function(config) {
+      if (window.firebase && config) {
+        try {
+          if (!firebase.apps.length) {
+            firebase.initializeApp(config);
+          }
+          return firebase.auth();
+        } catch(e) {
+          console.warn("Firebase init:", e);
+        }
+      }
+      return null;
+    };
+    window.sendFirebasePasswordReset = async function(email) {
+      if (window.firebase && firebase.apps.length) {
+        try {
+          await firebase.auth().sendPasswordResetEmail(email);
+          return { success: true, message: "Email reset kata sandi resmi telah dikirim ke " + email + ". Silakan periksa Kotak Masuk atau folder Spam." };
+        } catch(err) {
+          return { success: false, message: err.message || "Gagal mengirim email reset via Firebase." };
+        }
+      }
+      return { success: false, fallback: true };
+    };
+  </script>
 
   <style>
     body {
@@ -1749,19 +1779,24 @@
         if (token) {
           loadUserData(token);
         } else {
+          const currentUserId = localStorage.getItem('juz30_current_userid');
           const currentEmail = localStorage.getItem('juz30_current_email');
           let localUser = null;
           let localProg = {};
           let localHadits = {};
 
-          if (currentEmail) {
-            const storageKey = `juz30_account_${currentEmail.toLowerCase()}`;
-            const accountData = JSON.parse(localStorage.getItem(storageKey) || 'null');
-            if (accountData) {
-              localUser = accountData.user;
-              localProg = accountData.progress || {};
-              localHadits = accountData.haditsProgress || {};
-            }
+          let accountData = null;
+          if (currentUserId) {
+            try { accountData = JSON.parse(localStorage.getItem(`juz30_account_uid_${currentUserId}`) || 'null'); } catch(e){}
+          }
+          if (!accountData && currentEmail) {
+            try { accountData = JSON.parse(localStorage.getItem(`juz30_account_${currentEmail.toLowerCase()}`) || 'null'); } catch(e){}
+          }
+
+          if (accountData) {
+            localUser = accountData.user;
+            localProg = accountData.progress || {};
+            localHadits = accountData.haditsProgress || {};
           }
 
           if (!localUser) {
@@ -1781,67 +1816,101 @@
         }
       }, []);
 
-      // Helper penyimpanan internal multi-akun berdasarkan email
+      // Helper penyimpanan internal multi-akun dengan foreign key userId (Google sub / providerAccountId / email)
       const saveToActiveAccountStorage = (updatedUser = null, updatedQuranProgress = null, updatedHaditsProgress = null) => {
+        const activeUser = updatedUser || userData;
+        const activeUserId = (activeUser && (activeUser.userId || (activeUser.googleId ? ('google_' + activeUser.googleId) : (activeUser.email ? ('email_' + activeUser.email.toLowerCase().trim()) : null)))) ||
+          localStorage.getItem('juz30_current_userid') ||
+          null;
+
         const activeEmail = (
-          (updatedUser && updatedUser.email) ||
-          (userData && userData.email) ||
+          (activeUser && activeUser.email) ||
           localStorage.getItem('juz30_current_email') ||
           ''
         ).toLowerCase().trim();
 
-        if (activeEmail) {
-          const storageKey = `juz30_account_${activeEmail}`;
-          let accountData = null;
-          try {
-            accountData = JSON.parse(localStorage.getItem(storageKey) || 'null');
-          } catch (e) {}
+        if (!activeUserId && !activeEmail) return;
 
-          if (!accountData) {
-            accountData = { user: updatedUser || userData, progress: {}, haditsProgress: {} };
-          }
-          if (updatedUser) accountData.user = { ...(accountData.user || {}), ...updatedUser };
-          if (updatedQuranProgress) accountData.progress = updatedQuranProgress;
-          if (updatedHaditsProgress) accountData.haditsProgress = updatedHaditsProgress;
+        const uidStorageKey = activeUserId ? `juz30_account_uid_${activeUserId}` : null;
+        const emailStorageKey = activeEmail ? `juz30_account_${activeEmail}` : null;
 
-          localStorage.setItem(storageKey, JSON.stringify(accountData));
-          localStorage.setItem('juz30_current_email', activeEmail);
+        let accountData = null;
+        if (uidStorageKey) {
+          try { accountData = JSON.parse(localStorage.getItem(uidStorageKey) || 'null'); } catch(e){}
         }
+        if (!accountData && emailStorageKey) {
+          try { accountData = JSON.parse(localStorage.getItem(emailStorageKey) || 'null'); } catch(e){}
+        }
+
+        if (!accountData) {
+          accountData = {
+            userId: activeUserId || ('email_' + activeEmail),
+            providerAccountId: (activeUser && (activeUser.googleId || activeUser.providerAccountId)) || activeEmail,
+            authProvider: (activeUser && activeUser.authProvider) || 'email',
+            user: activeUser || userData,
+            progress: {},
+            haditsProgress: {}
+          };
+        }
+
+        if (activeUser) {
+          accountData.user = { ...(accountData.user || {}), ...activeUser };
+          if (activeUserId) accountData.user.userId = activeUserId;
+        }
+        if (updatedQuranProgress) accountData.progress = updatedQuranProgress;
+        if (updatedHaditsProgress) accountData.haditsProgress = updatedHaditsProgress;
+        if (activeUserId) accountData.userId = activeUserId;
+        accountData.updatedAt = Date.now();
+
+        const serialized = JSON.stringify(accountData);
+        if (uidStorageKey) localStorage.setItem(uidStorageKey, serialized);
+        if (emailStorageKey) localStorage.setItem(emailStorageKey, serialized);
+        if (activeUserId) localStorage.setItem('juz30_current_userid', activeUserId);
+        if (activeEmail) localStorage.setItem('juz30_current_email', activeEmail);
       };
 
       // Sinkronisasi otomatis ke akun setiap kali progress berubah saat login
       useEffect(() => {
-        if (userData?.email && Object.keys(progress).length > 0) {
+        if ((userData?.userId || userData?.email) && Object.keys(progress).length > 0) {
           saveToActiveAccountStorage(userData, progress, null);
         }
       }, [progress]);
 
       useEffect(() => {
-        if (userData?.email && Object.keys(haditsProgress).length > 0) {
+        if ((userData?.userId || userData?.email) && Object.keys(haditsProgress).length > 0) {
           saveToActiveAccountStorage(userData, null, haditsProgress);
         }
       }, [haditsProgress]);
 
       const handleLoginSuccess = (authToken, user, initialProgress = {}, initialHaditsProgress = null) => {
+        const userEmail = (user?.email || '').toLowerCase().trim();
+        const userId = user?.userId || (user?.googleId ? ('google_' + user.googleId) : (userEmail ? ('email_' + userEmail) : ('user_' + Date.now())));
+        
+        const fullUser = {
+          ...user,
+          userId: userId,
+          providerAccountId: user.providerAccountId || user.googleId || userEmail
+        };
+
         setToken(authToken);
         localStorage.setItem('juz30_gas_token', authToken);
-        localStorage.setItem('juz30_local_user', JSON.stringify(user));
-        const userEmail = (user?.email || '').toLowerCase().trim();
+        localStorage.setItem('juz30_local_user', JSON.stringify(fullUser));
+        localStorage.setItem('juz30_current_userid', userId);
         if (userEmail) {
           localStorage.setItem('juz30_current_email', userEmail);
         }
-        setUserData(user);
+        setUserData(fullUser);
 
-        // Ambil data progress terbaik: prioritaskan initialProgress, jika kosong ambil dari storage akun email ini
+        // Ambil data progress terbaik: prioritaskan initialProgress, jika kosong cari dari foreign key userId lalu email
         let newProg = initialProgress;
         if (!newProg || Object.keys(newProg).length === 0) {
-          if (userEmail) {
-            try {
-              const acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || '{}');
-              if (acc.progress && Object.keys(acc.progress).length > 0) {
-                newProg = acc.progress;
-              }
-            } catch(e) {}
+          let acc = null;
+          try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
+          if (!acc && userEmail) {
+            try { acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null'); } catch(e){}
+          }
+          if (acc?.progress && Object.keys(acc.progress).length > 0) {
+            newProg = acc.progress;
           }
         }
         newProg = newProg || {};
@@ -1850,13 +1919,13 @@
 
         let newHadits = initialHaditsProgress;
         if (!newHadits || Object.keys(newHadits).length === 0) {
-          if (userEmail) {
-            try {
-              const acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || '{}');
-              if (acc.haditsProgress && Object.keys(acc.haditsProgress).length > 0) {
-                newHadits = acc.haditsProgress;
-              }
-            } catch(e) {}
+          let acc = null;
+          try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
+          if (!acc && userEmail) {
+            try { acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null'); } catch(e){}
+          }
+          if (acc?.haditsProgress && Object.keys(acc.haditsProgress).length > 0) {
+            newHadits = acc.haditsProgress;
           }
           if (!newHadits || Object.keys(newHadits).length === 0) {
             try {
@@ -1870,27 +1939,22 @@
         setHaditsProgress(newHadits);
         localStorage.setItem('juz30_hadits_progress', JSON.stringify(newHadits));
 
-        // Sinkronisasi data ke internal storage per-akun
-        saveToActiveAccountStorage(user, newProg, newHadits);
+        // Sinkronisasi data ke internal storage per-akun dengan foreign key userId
+        saveToActiveAccountStorage(fullUser, newProg, newHadits);
 
         setCurrentView('dashboard');
         setIsOfflineMode(!gasBridge.isGAS);
-        showToast(`Ahlan wa Sahlan, ${user.name}! 🌟`);
+        showToast(`Ahlan wa Sahlan, ${fullUser.name}! 🌟`);
       };
 
       const handleLogout = () => {
-        const activeEmail = (
-          (userData && userData.email) ||
-          localStorage.getItem('juz30_current_email') ||
-          ''
-        ).toLowerCase().trim();
-
-        if (activeEmail) {
+        if (userData) {
           saveToActiveAccountStorage(userData, progress, haditsProgress);
         }
 
         localStorage.removeItem('juz30_gas_token');
         localStorage.removeItem('juz30_current_email');
+        localStorage.removeItem('juz30_current_userid');
         localStorage.removeItem('juz30_local_user');
         localStorage.removeItem('juz30_local_progress');
         localStorage.removeItem('juz30_hadits_progress');
@@ -2359,18 +2423,27 @@
         }
 
         const userEmail = payload.email.toLowerCase().trim();
-        const storageKey = `juz30_account_${userEmail}`;
+        const googleSub = payload.sub || "";
+        const userId = 'google_' + (googleSub || userEmail);
+
         let existingAccount = null;
         try {
-          existingAccount = JSON.parse(localStorage.getItem(storageKey) || 'null');
+          existingAccount = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null');
         } catch (e) {}
+        if (!existingAccount) {
+          try {
+            existingAccount = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null');
+          } catch (e) {}
+        }
 
         // Tampilkan Popup Awal Konfirmasi Profil Google (Nama & Foto)
         setGoogleConfirmUser({
+          userId: userId,
+          providerAccountId: googleSub,
           email: userEmail,
           name: existingAccount?.user?.name || payload.name || payload.given_name || "Santri Google",
           avatar: payload.picture || existingAccount?.user?.avatar || "🦁",
-          googleId: payload.sub,
+          googleId: googleSub,
           credential: response.credential,
           isExisting: Boolean(existingAccount)
         });
@@ -2381,13 +2454,19 @@
         if (!googleConfirmUser || !googleConfirmUser.email) return;
 
         const userEmail = googleConfirmUser.email.toLowerCase().trim();
-        const storageKey = `juz30_account_${userEmail}`;
+        const googleSub = googleConfirmUser.googleId || "";
+        const userId = googleConfirmUser.userId || ('google_' + (googleSub || userEmail));
+        const uidStorageKey = `juz30_account_uid_${userId}`;
+        const emailStorageKey = `juz30_account_${userEmail}`;
 
         let accountData = null;
         try {
-          accountData = JSON.parse(localStorage.getItem(storageKey) || 'null');
-        } catch (e) {
-          accountData = null;
+          accountData = JSON.parse(localStorage.getItem(uidStorageKey) || 'null');
+        } catch (e) {}
+        if (!accountData) {
+          try {
+            accountData = JSON.parse(localStorage.getItem(emailStorageKey) || 'null');
+          } catch (e) {}
         }
 
         // Ambil data progres yang tersimpan di akun, ATAU jika belum ada/kosong, wariskan dari local storage
@@ -2403,32 +2482,30 @@
           } catch (e) {}
         }
 
-        if (!accountData) {
-          accountData = {
-            user: {
-              name: googleConfirmUser.name || "Santri Google",
-              email: userEmail,
-              avatar: googleConfirmUser.avatar || "🦁",
-              googleId: googleConfirmUser.googleId,
-              authProvider: "google",
-              createdAt: Date.now()
-            },
-            progress: savedProgress,
-            haditsProgress: savedHaditsProgress
-          };
-        } else {
-          accountData.user = {
-            ...accountData.user,
-            name: googleConfirmUser.name || accountData.user.name,
-            avatar: googleConfirmUser.avatar || accountData.user.avatar,
-            googleId: googleConfirmUser.googleId,
-            authProvider: "google"
-          };
-          accountData.progress = savedProgress;
-          accountData.haditsProgress = savedHaditsProgress;
-        }
+        const fullUser = {
+          userId: userId,
+          providerAccountId: googleSub,
+          name: googleConfirmUser.name || (accountData?.user?.name) || "Santri Google",
+          email: userEmail,
+          avatar: googleConfirmUser.avatar || (accountData?.user?.avatar) || "🦁",
+          googleId: googleSub,
+          authProvider: "google",
+          updatedAt: Date.now()
+        };
 
-        localStorage.setItem(storageKey, JSON.stringify(accountData));
+        accountData = {
+          userId: userId,
+          providerAccountId: googleSub,
+          authProvider: "google",
+          user: fullUser,
+          progress: savedProgress,
+          haditsProgress: savedHaditsProgress
+        };
+
+        const serialized = JSON.stringify(accountData);
+        localStorage.setItem(uidStorageKey, serialized);
+        localStorage.setItem(emailStorageKey, serialized);
+        localStorage.setItem('juz30_current_userid', userId);
         localStorage.setItem('juz30_current_email', userEmail);
         localStorage.setItem('juz30_google_token', googleConfirmUser.credential);
         localStorage.setItem('juz30_local_progress', JSON.stringify(savedProgress));
@@ -2437,8 +2514,8 @@
         setGoogleConfirmUser(null);
 
         onLoginSuccess(
-          'google_' + (googleConfirmUser.googleId || Date.now()),
-          accountData.user,
+          'google_' + (googleSub || Date.now()),
+          fullUser,
           savedProgress,
           savedHaditsProgress
         );
@@ -2459,6 +2536,16 @@
           let tempPass = "";
           let magicUrl = "";
 
+          // 1. Coba kirim via Firebase Auth jika SDK aktif
+          if (window.sendFirebasePasswordReset) {
+            const fbRes = await window.sendFirebasePasswordReset(cleanEmail);
+            if (fbRes && fbRes.success) {
+              setForgotSent(true);
+              setForgotMsg(fbRes.message);
+              return;
+            }
+          }
+
           if (gasBridge.isGAS) {
             const res = await gasBridge.call('apiForgotPassword', { email: cleanEmail });
             if (res && res.success) {
@@ -2472,11 +2559,19 @@
             }
           } else {
             // Standalone mode / browser PWA mode / Vercel
-            const storageKey = `juz30_account_${cleanEmail}`;
+            const userId = 'email_' + cleanEmail;
+            const uidStorageKey = `juz30_account_uid_${userId}`;
+            const emailStorageKey = `juz30_account_${cleanEmail}`;
+
             let accountData = null;
             try {
-              accountData = JSON.parse(localStorage.getItem(storageKey) || 'null');
+              accountData = JSON.parse(localStorage.getItem(uidStorageKey) || 'null');
             } catch (e) {}
+            if (!accountData) {
+              try {
+                accountData = JSON.parse(localStorage.getItem(emailStorageKey) || 'null');
+              } catch (e) {}
+            }
 
             if (!accountData) {
               setForgotMsg("Email belum terdaftar di aplikasi. Silakan periksa kembali email Anda.");
@@ -2489,8 +2584,13 @@
             tempPass = `Juz30-${randomCode}`;
 
             // 2. Perbarui kata sandi di akun santri
+            if (!accountData.user) accountData.user = {};
             accountData.user.password = tempPass;
-            localStorage.setItem(storageKey, JSON.stringify(accountData));
+            accountData.user.tempPasswordExpires = Date.now() + (30 * 60 * 1000);
+
+            const serialized = JSON.stringify(accountData);
+            localStorage.setItem(uidStorageKey, serialized);
+            localStorage.setItem(emailStorageKey, serialized);
 
             // 3. Buat tautan login otomatis (Magic Link)
             const baseUrl = window.location.origin + window.location.pathname;
@@ -2533,13 +2633,20 @@
             }
           } else {
             const userEmail = (email || '').toLowerCase().trim();
-            const storageKey = userEmail ? `juz30_account_${userEmail}` : null;
+            const userId = 'email_' + userEmail;
+            const uidStorageKey = `juz30_account_uid_${userId}`;
+            const emailStorageKey = userEmail ? `juz30_account_${userEmail}` : null;
             let accountData = null;
 
-            if (storageKey) {
+            if (userEmail) {
               try {
-                accountData = JSON.parse(localStorage.getItem(storageKey) || 'null');
+                accountData = JSON.parse(localStorage.getItem(uidStorageKey) || 'null');
               } catch (e) {}
+              if (!accountData && emailStorageKey) {
+                try {
+                  accountData = JSON.parse(localStorage.getItem(emailStorageKey) || 'null');
+                } catch (e) {}
+              }
             }
 
             if (isLogin) {
@@ -2555,19 +2662,29 @@
 
             if (!accountData) {
               accountData = {
-                user: { name: name || "Santri Hebat", avatar, email: userEmail, password, authProvider: 'email' },
+                userId: userId,
+                providerAccountId: userEmail,
+                authProvider: 'email',
+                user: { userId, providerAccountId: userEmail, name: name || "Santri Hebat", avatar, email: userEmail, password, authProvider: 'email' },
                 progress: {},
                 haditsProgress: {}
               };
-              if (storageKey) localStorage.setItem(storageKey, JSON.stringify(accountData));
             } else {
               if (!isLogin && password) {
                 accountData.user.password = password;
-                if (storageKey) localStorage.setItem(storageKey, JSON.stringify(accountData));
               }
+              if (!accountData.userId) accountData.userId = userId;
+              if (!accountData.user.userId) accountData.user.userId = userId;
             }
 
-            if (userEmail) localStorage.setItem('juz30_current_email', userEmail);
+            const serialized = JSON.stringify(accountData);
+            if (uidStorageKey) localStorage.setItem(uidStorageKey, serialized);
+            if (emailStorageKey) localStorage.setItem(emailStorageKey, serialized);
+
+            if (userEmail) {
+              localStorage.setItem('juz30_current_userid', userId);
+              localStorage.setItem('juz30_current_email', userEmail);
+            }
             onLoginSuccess('local_token_' + Date.now(), accountData.user, accountData.progress || {}, accountData.haditsProgress || {});
           }
         } catch (err) {
@@ -2581,20 +2698,61 @@
         <div className="flex flex-col items-center justify-center min-h-[75vh] py-6 animate-gentle max-w-md mx-auto">
           {showForgotPassword ? (
             /* =======================================================
-               TAMPILAN LUPA PASSWORD: HANYA FIELD EMAIL & RESET PASSWORD
+               TAMPILAN LUPA PASSWORD: DEDIKASI GOOGLE & RESET EMAIL
                ======================================================= */
             <div className="w-full bg-white p-6 sm:p-8 rounded-3xl shadow-xl border-2 border-emerald-100 relative">
-              <div className="w-20 h-20 mx-auto -mt-16 bg-gradient-to-tr from-amber-500 to-emerald-500 p-3 rounded-3xl shadow-lg border-4 border-white flex items-center justify-center text-white text-3xl">
+              <div className="w-20 h-20 mx-auto -mt-16 bg-gradient-to-tr from-amber-500 to-emerald-500 p-3 rounded-3xl shadow-lg border-4 border-white flex items-center justify-center text-white text-3xl shrink-0">
                 🔑
               </div>
 
               <div className="text-center mt-3 mb-5">
                 <h1 className="text-2xl font-black text-slate-800 tracking-tight">
-                  Lupa Kata Sandi
+                  Pemulihan & Lupa Sandi
                 </h1>
                 <p className="text-xs font-bold text-slate-500 mt-1">
-                  Masukkan email akun untuk menerima tautan reset kata sandi
+                  Pilih opsi sesuai jenis akun yang Anda gunakan
                 </p>
+              </div>
+
+              {/* CARD 1: AKUN GOOGLE (GOOGLE SIGN-IN RECOVERY) */}
+              <div className="mb-5 bg-gradient-to-br from-sky-50 to-blue-50/50 border-2 border-sky-200 p-4 rounded-2xl text-left shadow-2xs">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="w-6 h-6 rounded-lg bg-white flex items-center justify-center shadow-xs border border-sky-200 shrink-0">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                    </svg>
+                  </div>
+                  <h4 className="text-xs font-black text-sky-950">
+                    Masuk Menggunakan Akun Google?
+                  </h4>
+                </div>
+                <p className="text-[11px] font-semibold text-slate-600 leading-relaxed mb-2.5">
+                  Kata sandi akun Google dikelola dan dilindungi secara mandiri oleh Google (bukan di web app ini). Jika lupa kata sandi Google, silakan pulihkan akun Anda melalui halaman resmi:
+                </p>
+                <a
+                  id="googleAccountRecoveryLink"
+                  href="https://accounts.google.com/signin/recovery"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-2.5 px-3 bg-white hover:bg-sky-100/70 text-sky-900 border-2 border-sky-300 rounded-xl text-xs font-black flex items-center justify-center gap-2 shadow-2xs transition active:scale-95 no-underline"
+                >
+                  <span>Buka Pemulihan Akun Google ↗</span>
+                </a>
+                <p className="text-[10px] text-slate-500 font-bold mt-2 text-center">
+                  Setelah selesai di Google, Anda dapat langsung masuk dengan tombol Google.
+                </p>
+              </div>
+
+              {/* PEMISAH ANTAR OPSI */}
+              <div className="flex items-center justify-between mb-4">
+                <span className="w-1/4 border-b border-slate-200"></span>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider text-center px-1">
+                  Atau Akun Email & Kata Sandi
+                </span>
+                <span className="w-1/4 border-b border-slate-200"></span>
               </div>
 
               {forgotSent ? (
@@ -2604,7 +2762,7 @@
                       ✉️
                     </div>
                     <h4 className="font-black text-emerald-900 text-base">
-                      Tautan & Kata Sandi Berhasil Dibuat!
+                      Tautan & Kata Sandi Berhasil Diproses!
                     </h4>
                     <p className="text-xs font-semibold text-emerald-800 leading-relaxed">
                       Pengaturan ulang kata sandi telah diproses untuk email:
@@ -2653,9 +2811,12 @@
                     className="w-full py-3.5 text-sm font-black shadow-md"
                     onClick={() => {
                       const cleanEmail = (forgotEmail || '').toLowerCase().trim();
-                      const storageKey = `juz30_account_${cleanEmail}`;
+                      const userId = 'email_' + cleanEmail;
                       let acc = null;
-                      try { acc = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch(e){}
+                      try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
+                      if (!acc) {
+                        try { acc = JSON.parse(localStorage.getItem(`juz30_account_${cleanEmail}`) || 'null'); } catch(e){}
+                      }
                       setShowForgotPassword(false);
                       setForgotSent(false);
                       setForgotEmail("");
@@ -2722,7 +2883,7 @@
                     className="w-full py-3.5 text-sm font-black shadow-md"
                     disabled={isSendingForgot}
                   >
-                    {isSendingForgot ? 'Mengirim Email...' : 'Reset Password ✉️'}
+                    {isSendingForgot ? 'Mengirim Permintaan...' : 'Reset Password ✉️'}
                   </Button3D>
 
                   <div className="pt-2 text-center">
