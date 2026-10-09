@@ -1,0 +1,10 @@
+{
+  "name": "hafalan-juz30",
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/$1"
+    }
+  ]
+}
