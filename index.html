@@ -190,16 +190,51 @@
 
     const gasBridge = {
       isGAS: typeof google !== 'undefined' && Boolean(google?.script?.run),
-      call: function(functionName, param) {
-        return new Promise((resolve, reject) => {
-          if (this.isGAS) {
+      getApiUrl: function() {
+        return window.GAS_API_URL || localStorage.getItem('juz30_gas_api_url') || '';
+      },
+      setApiUrl: function(url) {
+        if (url) {
+          const clean = url.trim();
+          localStorage.setItem('juz30_gas_api_url', clean);
+          window.GAS_API_URL = clean;
+        } else {
+          localStorage.removeItem('juz30_gas_api_url');
+          window.GAS_API_URL = '';
+        }
+      },
+      hasBackend: function() {
+        return this.isGAS || Boolean(this.getApiUrl());
+      },
+      call: async function(functionName, param = {}) {
+        // 1. Jika berjalan langsung di dalam GAS (Google Apps Script iframe)
+        if (this.isGAS) {
+          return new Promise((resolve, reject) => {
             google.script.run
               .withSuccessHandler((res) => resolve(res))
               .withFailureHandler((err) => reject(err))[functionName](param);
-          } else {
-            reject(new Error("Berjalan di mode pratinjau mandiri"));
+          });
+        }
+
+        // 2. Jika ada Web App URL dari GAS (misal di Vercel atau hosting mandiri)
+        const apiUrl = this.getApiUrl();
+        if (apiUrl) {
+          try {
+            const cleanAction = functionName.replace(/^api/, '').toLowerCase();
+            const res = await fetch(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({ action: cleanAction, payload: param })
+            });
+            const data = await res.json();
+            return data;
+          } catch (fetchErr) {
+            console.warn("Koneksi GAS Web App gagal:", fetchErr);
+            throw fetchErr;
           }
-        });
+        }
+
+        throw new Error("Mode lokal mandiri (belum terhubung URL GAS)");
       }
     };
 
@@ -1728,9 +1763,9 @@
         localStorage.setItem('juz30_local_user', JSON.stringify(updatedUser));
         saveToActiveAccountStorage(updatedUser, null, null);
 
-        if (token && gasBridge.isGAS) {
+        if (gasBridge.hasBackend()) {
           try {
-            await gasBridge.call('apiUpdateProfile', { token, ...updates });
+            await gasBridge.call('apiUpdateProfile', { token, userId: updatedUser.userId, email: updatedUser.email, ...updates });
           } catch (err) {
             console.error("Gagal sinkron profil ke GAS:", err);
           }
@@ -1753,7 +1788,7 @@
       const loadUserData = async (authToken) => {
         setLoading(true);
         try {
-          if (gasBridge.isGAS) {
+          if (gasBridge.hasBackend()) {
             const res = await gasBridge.call('apiGetMe', authToken);
             if (res && res.success) {
               setUserData(res.user);
@@ -2004,9 +2039,9 @@
         localStorage.setItem('juz30_local_progress', JSON.stringify(updated));
         saveToActiveAccountStorage(null, updated, null);
 
-        if (token && gasBridge.isGAS) {
+        if (gasBridge.hasBackend()) {
           try {
-            await gasBridge.call('apiSaveProgress', { token, surahId, ayahNum, status, timestamp });
+            gasBridge.call('apiSaveProgress', { token, userId: (userData?.userId || ('email_' + userData?.email)), email: userData?.email, surahId, ayahNum, status, timestamp }).catch(() => {});
           } catch (err) {
             console.error("Gagal sinkron progres ke server:", err);
           }
@@ -2023,9 +2058,9 @@
         localStorage.setItem('juz30_local_progress', JSON.stringify(updated));
         saveToActiveAccountStorage(null, updated, null);
 
-        if (token && gasBridge.isGAS) {
+        if (gasBridge.hasBackend()) {
           try {
-            await gasBridge.call('apiSaveBulkProgress', { token, updates, timestamp: now });
+            gasBridge.call('apiSaveBulkProgress', { token, userId: (userData?.userId || ('email_' + userData?.email)), email: userData?.email, updates, timestamp: now }).catch(() => {});
           } catch (err) {
             console.error("Gagal sinkron progres borongan:", err);
           }
@@ -2608,12 +2643,12 @@
             } catch (e) {}
           }
 
-          // Cek juga di Google Apps Script jika berjalan di GAS
-          if (!accountData && gasBridge.isGAS) {
+          // Cek juga di Google Apps Script (Google Sheets) jika terhubung
+          if (!accountData && gasBridge.hasBackend()) {
             try {
               const res = await gasBridge.call('apiCheckUser', { email: cleanEmail });
-              if (res && res.success && res.user) {
-                accountData = res;
+              if (res && res.success && res.exists && res.user) {
+                accountData = { user: res.user, userId: res.user.id || res.user.userId };
               }
             } catch (e) {}
           }
@@ -2647,8 +2682,8 @@
           setGeneratedTempPass(tempPass);
           setGeneratedMagicLink(magicUrl);
 
-          // Coba kirim via Google Apps Script jika berjalan di GAS
-          if (gasBridge.isGAS) {
+          // Sinkronkan sandi sementara ke Google Apps Script (Google Sheets) jika terhubung
+          if (gasBridge.hasBackend()) {
             try {
               await gasBridge.call('apiForgotPassword', { email: cleanEmail });
             } catch (gasErr) {}
@@ -2668,22 +2703,26 @@
         setIsLoading(true);
 
         try {
-          if (gasBridge.isGAS) {
+          if (gasBridge.hasBackend()) {
             if (isLogin) {
               const res = await gasBridge.call('apiLogin', { email, password });
               if (res && res.success) {
-                onLoginSuccess(res.token, res.user, res.progress);
+                onLoginSuccess(res.token, res.user, res.progress, res.haditsProgress || {});
                 return;
               } else {
                 setError(res?.message || "Email atau kata sandi tidak cocok.");
+                setIsLoading(false);
+                return;
               }
             } else {
-              const res = await gasBridge.call('apiRegister', { email, password, name, avatar });
+              const res = await gasBridge.call('apiRegister', { email, password, name, avatar, authProvider: 'email' });
               if (res && res.success) {
-                onLoginSuccess(res.token, res.user, res.progress);
+                onLoginSuccess(res.token, res.user, res.progress, res.haditsProgress || {});
                 return;
               } else {
                 setError(res?.message || "Pendaftaran gagal. Coba email lain.");
+                setIsLoading(false);
+                return;
               }
             }
           } else {
@@ -5510,7 +5549,69 @@
             </Button3D>
           </div>
 
-          {/* 4. CTA Jasa Pembuatan Website / Aplikasi Lainnya */}
+          {/* 4. SINKRONISASI DATABASE GOOGLE SHEETS (APPS SCRIPT / GAS) */}
+          <div className="bg-white rounded-3xl p-5 sm:p-7 shadow-sm border-2 border-emerald-100 space-y-4">
+            <div className="flex items-center space-x-3 text-emerald-900 border-b border-emerald-100 pb-3">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-100 flex items-center justify-center text-xl shrink-0">
+                📊
+              </div>
+              <div>
+                <h3 className="font-black text-sm sm:text-base text-slate-800">
+                  Database Cloud Google Sheets (Apps Script / GAS)
+                </h3>
+                <p className="text-[11px] font-semibold text-emerald-600">
+                  Semua data santri & riwayat hafalan tersimpan rapi di Google Spreadsheet Anda
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-600">Status Database:</span>
+                <span className={`font-black px-2.5 py-1 rounded-full text-[11px] ${
+                  gasBridge.hasBackend()
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : 'bg-slate-100 text-slate-600 border border-slate-300'
+                }`}>
+                  {gasBridge.isGAS ? "🟢 Terhubung (Script Container)" : gasBridge.hasBackend() ? "🟢 Terhubung ke Google Sheets" : "⚪ Penyimpanan Lokal (Belum Terhubung URL GAS)"}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-extrabold text-slate-700 mb-1">
+                  URL Web App Google Apps Script (GAS):
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    defaultValue={gasBridge.getApiUrl()}
+                    id="gasWebAppUrlInput"
+                    className="flex-1 bg-white border border-slate-300 p-2.5 rounded-xl text-xs font-mono outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const input = document.getElementById('gasWebAppUrlInput');
+                      const val = input ? input.value : '';
+                      gasBridge.setApiUrl(val);
+                      if (showToast) {
+                        showToast(val ? "URL Google Apps Script tersimpan! Terhubung ke Google Sheets 🚀" : "URL GAS dihapus, kembali ke mode lokal.");
+                      }
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+                  >
+                    Simpan
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400 font-semibold mt-1.5 leading-relaxed">
+                  💡 Deploy berkas <code className="bg-slate-200 px-1 py-0.5 rounded text-slate-700">Code.js</code> di Google Apps Script Anda sebagai Web App, lalu masukkan URL-nya di sini agar data otomatis masuk ke Google Sheets.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* 5. CTA Jasa Pembuatan Website / Aplikasi Lainnya */}
           <div className="bg-white rounded-3xl p-5 sm:p-7 shadow-sm border-2 border-emerald-200 text-center relative overflow-hidden">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-black mb-2">
               <span>💼</span>
