@@ -62,8 +62,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <!-- 50 Hadits Arbain Data -->
   <script src="hadits-data.js"></script>
-  <!-- Google Identity Services (Sign In with Google) -->
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <!-- Firebase App & Auth Compatibility (Free Tier Auth Provider) -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
@@ -880,23 +878,6 @@
       return p && typeof p === 'object' ? p.status : p;
     };
 
-        const decodeGoogleJwt = (token) => {
-      try {
-        const base64Url = token.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(
-          atob(base64)
-            .split('')
-            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-            .join('')
-        );
-        return JSON.parse(jsonPayload);
-      } catch (e) {
-        console.error("Gagal decode JWT Google:", e);
-        return null;
-      }
-    };
-
     const resizeImage = (file, maxWidth = 256, maxHeight = 256) => {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -1249,17 +1230,6 @@
                         <span>🔒</span>
                         <span>Pengaturan Akun & Keamanan</span>
                       </span>
-                      {userData?.authProvider === 'google' && (
-                        <span className="text-[10px] bg-sky-100 text-sky-800 font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                          <svg className="w-3 h-3" viewBox="0 0 24 24">
-                            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                          </svg>
-                          <span>Google Sign-In</span>
-                        </span>
-                      )}
                     </div>
 
                     {/* Email Field */}
@@ -2390,7 +2360,6 @@
       const [avatar, setAvatar] = useState('🦁');
       const [error, setError] = useState("");
       const [isLoading, setIsLoading] = useState(false);
-      const [isGoogleReady, setIsGoogleReady] = useState(false);
       
       // State Lupa Password
       const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -2403,176 +2372,7 @@
       const [generatedMagicLink, setGeneratedMagicLink] = useState("");
       const [copiedPass, setCopiedPass] = useState(false);
 
-      // State untuk Popup Awal Konfirmasi Profil Google (Nama & Foto)
-      const [googleConfirmUser, setGoogleConfirmUser] = useState(null);
-
-      const GOOGLE_CLIENT_ID = "717248894370-kaqmf98v6m1hsts6cdlhp29k9t2r8chi.apps.googleusercontent.com";
       const avatarOptions = ['🦁', '🐯', '🐼', '🐰', '🦊', '🐨', '🦄', '🐬'];
-
-      // Render tombol resmi Google sesuai mode (signin_with vs signup_with)
-      useEffect(() => {
-        let isMounted = true;
-        let isInitialized = false;
-
-        const setupGoogleSignIn = () => {
-          if (isInitialized) return;
-          if (window.google?.accounts?.id) {
-            isInitialized = true;
-            try {
-              window.google.accounts.id.initialize({
-                client_id: GOOGLE_CLIENT_ID,
-                callback: handleGoogleResponse,
-                auto_select: false,
-                cancel_on_tap_outside: true
-              });
-
-              const container = document.getElementById("googleSignInBtnContainer");
-              if (container) {
-                container.innerHTML = "";
-                window.google.accounts.id.renderButton(container, {
-                  type: "standard",
-                  theme: "outline",
-                  size: "large",
-                  text: isLogin ? "signin_with" : "signup_with",
-                  shape: "pill",
-                  width: 300,
-                  logo_alignment: "left"
-                });
-              }
-              window.__handleGoogleResponse = handleGoogleResponse;
-              if (isMounted) setIsGoogleReady(true);
-            } catch (err) {
-              console.warn("GSI init info:", err);
-            }
-          }
-        };
-
-        setupGoogleSignIn();
-        const timer = setInterval(() => {
-          if (window.google?.accounts?.id && !isInitialized) {
-            setupGoogleSignIn();
-            clearInterval(timer);
-          }
-        }, 400);
-
-        return () => {
-          isMounted = false;
-          clearInterval(timer);
-        };
-      }, [isLogin, showForgotPassword]);
-
-      // Saat Google mengembalikan token kredensial
-      const handleGoogleResponse = (response) => {
-        if (!response?.credential) {
-          setError("Gagal menerima kredensial akun Google.");
-          return;
-        }
-        window.__handleGoogleResponse = handleGoogleResponse;
-
-        const payload = decodeGoogleJwt(response.credential);
-        if (!payload || !payload.email) {
-          setError("Data profil akun Google tidak lengkap.");
-          return;
-        }
-
-        const userEmail = payload.email.toLowerCase().trim();
-        const googleSub = payload.sub || "";
-        const userId = 'google_' + (googleSub || userEmail);
-
-        let existingAccount = null;
-        try {
-          existingAccount = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null');
-        } catch (e) {}
-        if (!existingAccount) {
-          try {
-            existingAccount = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null');
-          } catch (e) {}
-        }
-
-        // Tampilkan Popup Awal Konfirmasi Profil Google (Nama & Foto)
-        setGoogleConfirmUser({
-          userId: userId,
-          providerAccountId: googleSub,
-          email: userEmail,
-          name: existingAccount?.user?.name || payload.name || payload.given_name || "Santri Google",
-          avatar: payload.picture || existingAccount?.user?.avatar || "🦁",
-          googleId: googleSub,
-          credential: response.credential,
-          isExisting: Boolean(existingAccount)
-        });
-      };
-
-      // Konfirmasi popup awal profil Google untuk masuk ke Dashboard
-      const handleConfirmGoogleUser = () => {
-        if (!googleConfirmUser || !googleConfirmUser.email) return;
-
-        const userEmail = googleConfirmUser.email.toLowerCase().trim();
-        const googleSub = googleConfirmUser.googleId || "";
-        const userId = googleConfirmUser.userId || ('google_' + (googleSub || userEmail));
-        const uidStorageKey = `juz30_account_uid_${userId}`;
-        const emailStorageKey = `juz30_account_${userEmail}`;
-
-        let accountData = null;
-        try {
-          accountData = JSON.parse(localStorage.getItem(uidStorageKey) || 'null');
-        } catch (e) {}
-        if (!accountData) {
-          try {
-            accountData = JSON.parse(localStorage.getItem(emailStorageKey) || 'null');
-          } catch (e) {}
-        }
-
-        // Ambil data progres yang tersimpan di akun, ATAU jika belum ada/kosong, wariskan dari local storage
-        let savedProgress = accountData?.progress || {};
-        let savedHaditsProgress = accountData?.haditsProgress || {};
-
-        if (!accountData || (Object.keys(savedProgress).length === 0 && Object.keys(savedHaditsProgress).length === 0)) {
-          try {
-            const tempLocalProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
-            if (Object.keys(tempLocalProg).length > 0) savedProgress = tempLocalProg;
-            const tempLocalHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
-            if (Object.keys(tempLocalHadits).length > 0) savedHaditsProgress = tempLocalHadits;
-          } catch (e) {}
-        }
-
-        const fullUser = {
-          userId: userId,
-          providerAccountId: googleSub,
-          name: googleConfirmUser.name || (accountData?.user?.name) || "Santri Google",
-          email: userEmail,
-          avatar: googleConfirmUser.avatar || (accountData?.user?.avatar) || "🦁",
-          googleId: googleSub,
-          authProvider: "google",
-          updatedAt: Date.now()
-        };
-
-        accountData = {
-          userId: userId,
-          providerAccountId: googleSub,
-          authProvider: "google",
-          user: fullUser,
-          progress: savedProgress,
-          haditsProgress: savedHaditsProgress
-        };
-
-        const serialized = JSON.stringify(accountData);
-        localStorage.setItem(uidStorageKey, serialized);
-        localStorage.setItem(emailStorageKey, serialized);
-        localStorage.setItem('juz30_current_userid', userId);
-        localStorage.setItem('juz30_current_email', userEmail);
-        localStorage.setItem('juz30_google_token', googleConfirmUser.credential);
-        localStorage.setItem('juz30_local_progress', JSON.stringify(savedProgress));
-        localStorage.setItem('juz30_hadits_progress', JSON.stringify(savedHaditsProgress));
-
-        setGoogleConfirmUser(null);
-
-        onLoginSuccess(
-          'google_' + (googleSub || Date.now()),
-          fullUser,
-          savedProgress,
-          savedHaditsProgress
-        );
-      };
 
       // Handler reset password: Solusi 1 (Kata Sandi Sementara Instan)
       const handleForgotSubmit = async (e) => {
@@ -2997,7 +2797,7 @@
             </div>
           ) : (
             /* =======================================================
-               TAMPILAN UTAMA LOGIN / DAFTAR DENGAN GOOGLE & FORM
+               TAMPILAN UTAMA LOGIN / DAFTAR EMAIL & KATA SANDI
                ======================================================= */
             <div className="w-full bg-white p-6 sm:p-8 rounded-3xl shadow-xl border-2 border-emerald-100 relative">
               <div className="w-24 h-24 mx-auto -mt-16 rounded-3xl shadow-xl border-4 border-white overflow-hidden bg-white shrink-0">
@@ -3021,54 +2821,6 @@
                   {error}
                 </div>
               )}
-
-              {/* Tombol Google di Bagian Atas: Login by Google (jika masuk) ATAU Sign Up dengan Google (jika buat akun) */}
-              <div className="space-y-3 mb-5">
-                <div className="flex justify-center w-full min-h-[44px]">
-                  <div id="googleSignInBtnContainer" className="flex justify-center w-full"></div>
-                </div>
-
-                {/* Cadangan tombol jika SDK Google belum ter-render */}
-                {!isGoogleReady && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.google?.accounts?.id) {
-                        window.google.accounts.id.prompt();
-                      } else {
-                        const testEmail = prompt("Masukkan email Google santri untuk pengujian lokal:", "santri@gmail.com");
-                        if (testEmail) {
-                          const fakePayload = {
-                            email: testEmail.trim().toLowerCase(),
-                            name: testEmail.split('@')[0],
-                            picture: "🦁",
-                            sub: "local_g_" + Date.now()
-                          };
-                          const dummyCred = btoa(JSON.stringify({ alg: "HS256" })) + "." + btoa(JSON.stringify(fakePayload)) + ".signature";
-                          handleGoogleResponse({ credential: dummyCred });
-                        }
-                      }
-                    }}
-                    className="w-full max-w-[300px] mx-auto py-2.5 px-4 bg-white hover:bg-slate-50 border-2 border-slate-200 text-slate-700 font-extrabold rounded-full text-xs flex items-center justify-center gap-2.5 shadow-xs transition active:scale-95 cursor-pointer"
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24">
-                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                    </svg>
-                    <span>{isLogin ? 'Masuk dengan Google' : 'Daftar dengan Google'}</span>
-                  </button>
-                )}
-
-                <div className="flex items-center justify-between pt-1">
-                  <span className="w-1/4 border-b border-slate-200"></span>
-                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">
-                    {isLogin ? 'atau masuk via email' : 'atau daftar manual'}
-                  </span>
-                  <span className="w-1/4 border-b border-slate-200"></span>
-                </div>
-              </div>
 
               <form onSubmit={handleSubmit} className="space-y-3.5">
                 {!isLogin && (
@@ -3204,77 +2956,6 @@
                 >
                   Lanjutkan Sebagai Tamu (Offline)
                 </button>
-              </div>
-            </div>
-          )}
-
-          {/* POPUP AWAL KONFIRMASI PROFIL GOOGLE (Nama & Foto Profil) */}
-          {googleConfirmUser && (
-            <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-              <div className="bg-white rounded-3xl p-6 sm:p-7 max-w-sm w-full shadow-2xl border-4 border-emerald-200 text-center space-y-4">
-                <div className="w-16 h-16 mx-auto -mt-12 bg-gradient-to-tr from-emerald-500 to-teal-400 p-2.5 rounded-3xl shadow-lg border-4 border-white flex items-center justify-center text-white text-3xl">
-                  ✨
-                </div>
-
-                <div>
-                  <h3 className="text-lg font-black text-slate-800">
-                    Akun Google Terhubung!
-                  </h3>
-                  <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                    Konfirmasi profil santri untuk mulai menghafal
-                  </p>
-                </div>
-
-                {/* Foto Profil & Email dari Google */}
-                <div className="bg-emerald-50/80 p-4 rounded-2xl border border-emerald-200/80 flex flex-col items-center">
-                  <div className="relative mb-2">
-                    <UserAvatar avatar={googleConfirmUser.avatar} name={googleConfirmUser.name} size="lg" />
-                  </div>
-                  <span className="text-xs font-black text-slate-800 break-all">
-                    {googleConfirmUser.email}
-                  </span>
-                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-extrabold px-2 py-0.5 rounded-full mt-1.5 flex items-center gap-1">
-                    <span>✓</span>
-                    <span>Terverifikasi Google</span>
-                  </span>
-                </div>
-
-                {/* Input Nama Santri (Bisa disesuaikan nama panggilannya) */}
-                <div className="text-left">
-                  <label className="block text-xs font-extrabold text-slate-600 mb-1 ml-1">
-                    Nama Santri / Panggilan:
-                  </label>
-                  <input
-                    type="text"
-                    value={googleConfirmUser.name}
-                    onChange={(e) => setGoogleConfirmUser({ ...googleConfirmUser, name: e.target.value })}
-                    placeholder="Nama santri"
-                    className="w-full bg-slate-50 border-2 border-slate-200 p-2.5 rounded-xl text-sm font-black text-slate-800 outline-none focus:border-emerald-500 focus:bg-white"
-                  />
-                  <p className="text-[10px] text-slate-400 font-semibold mt-1 ml-1">
-                    Nama ini akan dicetak pada Sertifikat Kelulusan.
-                  </p>
-                </div>
-
-                {/* Tombol Konfirmasi & Batal */}
-                <div className="space-y-2 pt-1">
-                  <Button3D
-                    id="confirmGoogleUserBtn"
-                    type="button"
-                    colorClass="green"
-                    className="w-full py-3 text-sm font-black shadow-md"
-                    onClick={handleConfirmGoogleUser}
-                  >
-                    Bismillah, Mulai Menghafal 🚀
-                  </Button3D>
-                  <button
-                    type="button"
-                    onClick={() => setGoogleConfirmUser(null)}
-                    className="text-xs font-bold text-slate-400 hover:text-slate-600 py-1 cursor-pointer"
-                  >
-                    Batal / Ganti Akun
-                  </button>
-                </div>
               </div>
             </div>
           )}
