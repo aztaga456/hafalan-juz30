@@ -75,18 +75,30 @@ function setupUserTable(ss) {
       'Avatar',
       'Auth Provider',
       'Tanggal Daftar',
-      'Terakhir Aktif'
+      'Terakhir Aktif',
+      'Data Progress Juz 30',
+      'Data Progress Hadits',
+      'Terakhir Sinkron'
     ]);
 
     try {
-      var range = sheetUsers.getRange(1, 1, 1, 9);
+      var range = sheetUsers.getRange(1, 1, 1, 12);
       range.setBackground('#059669'); // Warna Hijau Zamrud
       range.setFontColor('#ffffff');
       range.setFontWeight('bold');
       sheetUsers.setFrozenRows(1);
-      for (var c = 1; c <= 9; c++) {
+      for (var c = 1; c <= 12; c++) {
         sheetUsers.autoResizeColumn(c);
       }
+    } catch (e) {}
+  } else {
+    // Pastikan kolom 10, 11, 12 ada untuk sinkronisasi progress hafalan
+    try {
+      var lastCol = Math.max(sheetUsers.getLastColumn(), 12);
+      var headerRow = sheetUsers.getRange(1, 1, 1, lastCol).getValues()[0];
+      if (!headerRow[9]) sheetUsers.getRange(1, 10).setValue('Data Progress Juz 30').setBackground('#059669').setFontColor('#ffffff').setFontWeight('bold');
+      if (!headerRow[10]) sheetUsers.getRange(1, 11).setValue('Data Progress Hadits').setBackground('#059669').setFontColor('#ffffff').setFontWeight('bold');
+      if (!headerRow[11]) sheetUsers.getRange(1, 12).setValue('Terakhir Sinkron').setBackground('#059669').setFontColor('#ffffff').setFontWeight('bold');
     } catch (e) {}
   }
 }
@@ -129,6 +141,8 @@ function apiRegister(data) {
 
     // Simpan data user & password ke baris Google Sheets
     if (userSheet) {
+      var progStr = JSON.stringify(data.progress || {});
+      var haditsStr = JSON.stringify(data.haditsProgress || {});
       userSheet.appendRow([
         userId,
         name,
@@ -138,6 +152,9 @@ function apiRegister(data) {
         avatar,
         authProvider,
         nowIso,
+        nowIso,
+        progStr,
+        haditsStr,
         nowIso
       ]);
     }
@@ -233,6 +250,11 @@ function apiLogin(data) {
     props.setProperty('sess_' + token, userId);
     props.setProperty('idmap_' + userId, email);
 
+    var savedProgress = {};
+    try { savedProgress = JSON.parse(userRow[9] || '{}'); } catch(e){}
+    var savedHaditsProgress = {};
+    try { savedHaditsProgress = JSON.parse(userRow[10] || '{}'); } catch(e){}
+
     return {
       success: true,
       token: token,
@@ -242,7 +264,9 @@ function apiLogin(data) {
         name: userName,
         email: email,
         avatar: userAvatar
-      }
+      },
+      progress: savedProgress,
+      haditsProgress: savedHaditsProgress
     };
   } catch (err) {
     return { success: false, message: 'Gagal masuk: ' + err.message };
@@ -265,6 +289,10 @@ function apiCheckUser(data) {
     for (var i = 1; i < dataValues.length; i++) {
       var rowEmail = (dataValues[i][2] || '').toString().toLowerCase().trim();
       if (rowEmail === email) {
+        var quranProg = {};
+        try { quranProg = JSON.parse(dataValues[i][9] || '{}'); } catch(e){}
+        var haditsProg = {};
+        try { haditsProg = JSON.parse(dataValues[i][10] || '{}'); } catch(e){}
         return {
           success: true,
           exists: true,
@@ -273,7 +301,9 @@ function apiCheckUser(data) {
             name: dataValues[i][1],
             email: rowEmail,
             avatar: dataValues[i][5]
-          }
+          },
+          progress: quranProg,
+          haditsProgress: haditsProg
         };
       }
     }
@@ -447,12 +477,113 @@ function apiUpdateProfile(data) {
   }
 }
 
+/**
+ * API: Simpan dan Sinkronkan Progres Hafalan Santri ke Google Sheets
+ */
+function apiSyncProgress(data) {
+  try {
+    var email = (data.email || '').toLowerCase().trim();
+    var userId = (data.userId || '').toString().trim();
+    var progress = data.progress || {};
+    var haditsProgress = data.haditsProgress || {};
+
+    if (!email && !userId) {
+      return { success: false, message: 'Email atau userId santri wajib diisi.' };
+    }
+
+    var ss = getDatabaseSpreadsheet();
+    var userSheet = ss ? ss.getSheetByName(SHEET_USERS) : null;
+    if (!userSheet) return { success: false, message: 'Database belum siap.' };
+
+    var dataValues = userSheet.getDataRange().getValues();
+    var userRowIdx = -1;
+
+    for (var i = 1; i < dataValues.length; i++) {
+      var rowUserId = (dataValues[i][0] || '').toString();
+      var rowEmail = (dataValues[i][2] || '').toString().toLowerCase().trim();
+      if ((userId && rowUserId === userId) || (email && rowEmail === email)) {
+        userRowIdx = i + 1;
+        break;
+      }
+    }
+
+    var progStr = JSON.stringify(progress);
+    var haditsStr = JSON.stringify(haditsProgress);
+    var nowIso = new Date().toISOString();
+
+    if (userRowIdx > 0) {
+      userSheet.getRange(userRowIdx, 10).setValue(progStr);
+      userSheet.getRange(userRowIdx, 11).setValue(haditsStr);
+      userSheet.getRange(userRowIdx, 12).setValue(nowIso);
+      return { success: true, message: 'Progres hafalan berhasil disimpan ke Google Sheets.' };
+    } else if (email) {
+      // Auto-insert akun baru beserta progres jika belum ada barisnya
+      var newUserId = userId || ('id_' + new Date().getTime() + '_' + Math.floor(Math.random() * 10000));
+      userSheet.appendRow([
+        newUserId,
+        (data.name || email.split('@')[0] || 'Santri Hebat'),
+        email,
+        '',
+        '',
+        (data.avatar || '🦁'),
+        'email',
+        nowIso,
+        nowIso,
+        progStr,
+        haditsStr,
+        nowIso
+      ]);
+      return { success: true, message: 'Akun dan progres hafalan baru berhasil dibuat di Google Sheets.' };
+    }
+
+    return { success: false, message: 'Pengguna tidak ditemukan.' };
+  } catch (err) {
+    return { success: false, message: 'Gagal sinkron progres: ' + err.message };
+  }
+}
+
+/**
+ * API: Ambil Progres Hafalan Santri Terbaru dari Google Sheets
+ */
+function apiGetProgress(data) {
+  try {
+    var email = (data.email || '').toLowerCase().trim();
+    var userId = (data.userId || '').toString().trim();
+
+    var ss = getDatabaseSpreadsheet();
+    var userSheet = ss ? ss.getSheetByName(SHEET_USERS) : null;
+    if (!userSheet) return { success: false, message: 'Database belum siap.' };
+
+    var dataValues = userSheet.getDataRange().getValues();
+    for (var i = 1; i < dataValues.length; i++) {
+      var rowUserId = (dataValues[i][0] || '').toString();
+      var rowEmail = (dataValues[i][2] || '').toString().toLowerCase().trim();
+      if ((userId && rowUserId === userId) || (email && rowEmail === email)) {
+        var quranProg = {};
+        try { quranProg = JSON.parse(dataValues[i][9] || '{}'); } catch(e){}
+        var haditsProg = {};
+        try { haditsProg = JSON.parse(dataValues[i][10] || '{}'); } catch(e){}
+        return {
+          success: true,
+          progress: quranProg,
+          haditsProgress: haditsProg,
+          lastSync: dataValues[i][11] || null
+        };
+      }
+    }
+    return { success: false, message: 'Data progres tidak ditemukan.' };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
 function doGet(e) {
   if (e && e.parameter && e.parameter.action) {
     var act = e.parameter.action;
     var res = { success: true, message: 'Google Apps Script Database Akun Aktif 🚀' };
     if (act === 'ping') res = { success: true, timestamp: new Date().toISOString() };
     else if (act === 'checkUser') res = apiCheckUser(e.parameter);
+    else if (act === 'getProgress') res = apiGetProgress(e.parameter);
 
     return ContentService.createTextOutput(JSON.stringify(res))
       .setMimeType(ContentService.MimeType.JSON);
@@ -486,6 +617,8 @@ function doPost(e) {
     else if (action === 'checkuser' || action === 'apicheckuser') responseData = apiCheckUser(payload);
     else if (action === 'forgotpassword' || action === 'apiforgotpassword') responseData = apiForgotPassword(payload);
     else if (action === 'updateprofile' || action === 'apiupdateprofile') responseData = apiUpdateProfile(payload);
+    else if (action === 'syncprogress' || action === 'apisyncprogress') responseData = apiSyncProgress(payload);
+    else if (action === 'getprogress' || action === 'apigetprogress') responseData = apiGetProgress(payload);
 
     return ContentService.createTextOutput(JSON.stringify(responseData))
       .setMimeType(ContentService.MimeType.JSON);

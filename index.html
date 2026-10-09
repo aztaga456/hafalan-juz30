@@ -1761,13 +1761,13 @@
         setLoading(true);
         try {
           const currentUserId = localStorage.getItem('juz30_current_userid');
-          const currentEmail = localStorage.getItem('juz30_current_email');
+          const currentEmail = (localStorage.getItem('juz30_current_email') || '').toLowerCase().trim();
           let accountData = null;
           if (currentUserId) {
             try { accountData = JSON.parse(localStorage.getItem(`juz30_account_uid_${currentUserId}`) || 'null'); } catch(e){}
           }
           if (!accountData && currentEmail) {
-            try { accountData = JSON.parse(localStorage.getItem(`juz30_account_${currentEmail.toLowerCase()}`) || 'null'); } catch(e){}
+            try { accountData = JSON.parse(localStorage.getItem(`juz30_account_${currentEmail}`) || 'null'); } catch(e){}
           }
           const localUser = accountData?.user || JSON.parse(localStorage.getItem('juz30_local_user') || 'null');
           const localProg = accountData?.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
@@ -1780,6 +1780,23 @@
             setCurrentView('dashboard');
             setIsOfflineMode(true);
             setLoading(false);
+
+            // Background sync: Ambil progress terbaru dari Google Sheets jika online
+            if (currentEmail && gasBridge.hasBackend()) {
+              gasBridge.call('apiGetProgress', { email: currentEmail, userId: currentUserId })
+                .then(cloudRes => {
+                  if (cloudRes && cloudRes.success) {
+                    const mergedQ = mergeProgressData(localProg, cloudRes.progress || {});
+                    const mergedH = mergeProgressData(localHadits, cloudRes.haditsProgress || {});
+                    setProgress(mergedQ);
+                    setHaditsProgress(mergedH);
+                    localStorage.setItem('juz30_local_progress', JSON.stringify(mergedQ));
+                    localStorage.setItem('juz30_hadits_progress', JSON.stringify(mergedH));
+                    saveToActiveAccountStorage(localUser, mergedQ, mergedH);
+                  }
+                })
+                .catch(err => console.warn("Background fetch progress info:", err));
+            }
             return;
           }
           setCurrentView('login');
@@ -1868,6 +1885,43 @@
         }
       }, []);
 
+      // Ref debounce untuk mencegah spam request ke Google Sheets saat user mencentang cepat
+      const syncTimeoutRef = useRef(null);
+      const syncProgressToCloud = (email, userId, quranProg, haditsProg) => {
+        if (!gasBridge.hasBackend() || !email) return;
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = setTimeout(() => {
+          gasBridge.call('apiSyncProgress', {
+            email: email,
+            userId: userId,
+            progress: quranProg || {},
+            haditsProgress: haditsProg || {}
+          }).catch(err => console.warn("Cloud progress sync notice:", err));
+        }, 1200);
+      };
+
+      // Penggabungan cerdas antara data lokal HP/PC dan data Cloud Google Sheets
+      const mergeProgressData = (local, cloud) => {
+        const merged = { ...(cloud || {}) };
+        Object.keys(local || {}).forEach(k => {
+          const lItem = local[k];
+          const cItem = merged[k];
+          const lStatus = typeof lItem === 'object' ? lItem.status : lItem;
+          const cStatus = typeof cItem === 'object' ? cItem.status : cItem;
+          const lTs = (typeof lItem === 'object' && lItem.timestamp) || 0;
+          const cTs = (typeof cItem === 'object' && cItem.timestamp) || 0;
+
+          if (lStatus === 'hafal') {
+            if (cStatus !== 'hafal' || lTs >= cTs) {
+              merged[k] = lItem;
+            }
+          } else if (lItem && !cItem) {
+            merged[k] = lItem;
+          }
+        });
+        return merged;
+      };
+
       // Helper penyimpanan internal multi-akun dengan foreign key userId (Google sub / providerAccountId / email)
       const saveToActiveAccountStorage = (updatedUser = null, updatedQuranProgress = null, updatedHaditsProgress = null) => {
         const activeUser = updatedUser || userData;
@@ -1919,6 +1973,11 @@
         if (emailStorageKey) localStorage.setItem(emailStorageKey, serialized);
         if (activeUserId) localStorage.setItem('juz30_current_userid', activeUserId);
         if (activeEmail) localStorage.setItem('juz30_current_email', activeEmail);
+
+        // Otomatis sinkronkan progres hafalan ke Google Sheets di cloud
+        if (activeEmail && gasBridge.hasBackend()) {
+          syncProgressToCloud(activeEmail, activeUserId, accountData.progress, accountData.haditsProgress);
+        }
       };
 
       // Sinkronisasi otomatis ke akun setiap kali progress berubah saat login
@@ -1953,50 +2012,37 @@
         }
         setUserData(fullUser);
 
-        // Ambil data progress terbaik: prioritaskan initialProgress, jika kosong cari dari foreign key userId lalu email
-        let newProg = initialProgress;
-        if (!newProg || Object.keys(newProg).length === 0) {
-          let acc = null;
-          try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
-          if (!acc && userEmail) {
-            try { acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null'); } catch(e){}
-          }
-          if (acc?.progress && Object.keys(acc.progress).length > 0) {
-            newProg = acc.progress;
-          }
-        }
-        newProg = newProg || {};
-        setProgress(newProg);
-        localStorage.setItem('juz30_local_progress', JSON.stringify(newProg));
+        // Ambil data progres lokal HP/PC
+        let localProg = {};
+        let localHadits = {};
+        try {
+          let acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null');
+          if (!acc && userEmail) acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null');
+          localProg = acc?.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+          localHadits = acc?.haditsProgress || JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+        } catch(e){}
 
-        let newHadits = initialHaditsProgress;
-        if (!newHadits || Object.keys(newHadits).length === 0) {
-          let acc = null;
-          try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
-          if (!acc && userEmail) {
-            try { acc = JSON.parse(localStorage.getItem(`juz30_account_${userEmail}`) || 'null'); } catch(e){}
-          }
-          if (acc?.haditsProgress && Object.keys(acc.haditsProgress).length > 0) {
-            newHadits = acc.haditsProgress;
-          }
-          if (!newHadits || Object.keys(newHadits).length === 0) {
-            try {
-              newHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
-            } catch {
-              newHadits = {};
-            }
-          }
-        }
-        newHadits = newHadits || {};
-        setHaditsProgress(newHadits);
-        localStorage.setItem('juz30_hadits_progress', JSON.stringify(newHadits));
+        // Gabungkan progres lokal dan progres cloud Google Sheets
+        const mergedQuran = mergeProgressData(localProg, initialProgress || {});
+        const mergedHadits = mergeProgressData(localHadits, initialHaditsProgress || {});
 
-        // Sinkronisasi data ke internal storage per-akun dengan foreign key userId
-        saveToActiveAccountStorage(fullUser, newProg, newHadits);
+        setProgress(mergedQuran);
+        localStorage.setItem('juz30_local_progress', JSON.stringify(mergedQuran));
+
+        setHaditsProgress(mergedHadits);
+        localStorage.setItem('juz30_hadits_progress', JSON.stringify(mergedHadits));
+
+        // Simpan ke storage per-akun
+        saveToActiveAccountStorage(fullUser, mergedQuran, mergedHadits);
+
+        // Langsung cadangkan hasil penggabungan ke Google Sheets
+        if (userEmail && gasBridge.hasBackend()) {
+          syncProgressToCloud(userEmail, userId, mergedQuran, mergedHadits);
+        }
 
         setCurrentView('dashboard');
         setIsOfflineMode(!gasBridge.isGAS);
-        showToast(`Ahlan wa Sahlan, ${fullUser.name}! 🌟`);
+        showToast(`Ahlan wa Sahlan, ${fullUser.name}! Data hafalan tersinkronisasi ☁️🌟`);
       };
 
       const handleLogout = () => {
@@ -2585,7 +2631,9 @@
                 localStorage.setItem(`juz30_account_${cleanEmail}`, JSON.stringify(acc));
               }
 
-              onLoginSuccess(gasRes.token, gasRes.user, savedProg, savedHadits);
+              const cloudProg = (gasRes.progress && Object.keys(gasRes.progress).length > 0) ? gasRes.progress : savedProg;
+              const cloudHadits = (gasRes.haditsProgress && Object.keys(gasRes.haditsProgress).length > 0) ? gasRes.haditsProgress : savedHadits;
+              onLoginSuccess(gasRes.token, gasRes.user, cloudProg, cloudHadits);
               return;
             }
 
@@ -2635,9 +2683,20 @@
             let registerSuccess = false;
             let regRes = null;
 
+            const savedProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+            const savedHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+
             if (gasBridge.hasBackend()) {
               try {
-                regRes = await gasBridge.call('apiRegister', { email: cleanEmail, password: inputPass, name: (name || '').trim(), avatar, authProvider: 'email' });
+                regRes = await gasBridge.call('apiRegister', {
+                  email: cleanEmail,
+                  password: inputPass,
+                  name: (name || '').trim(),
+                  avatar,
+                  authProvider: 'email',
+                  progress: savedProg,
+                  haditsProgress: savedHadits
+                });
                 if (regRes && regRes.success) {
                   registerSuccess = true;
                 }
@@ -2645,9 +2704,6 @@
                 console.warn("GAS register call error:", gasErr);
               }
             }
-
-            const savedProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
-            const savedHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
 
             if (registerSuccess && regRes) {
               onLoginSuccess(regRes.token, regRes.user, savedProg, savedHadits);
