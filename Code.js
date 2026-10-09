@@ -215,6 +215,14 @@ function apiLogin(data) {
       return { success: false, message: 'Kata sandi salah. Silakan periksa kembali.' };
     }
 
+    // Jika masuk menggunakan kata sandi sementara, perbarui kata sandi utama dan bersihkan sandi sementara
+    if (isTempPasswordMatch && !isPasswordMatch) {
+      try {
+        userSheet.getRange(userRowIdx, 4).setValue(password);
+        userSheet.getRange(userRowIdx, 5).setValue('');
+      } catch (e) {}
+    }
+
     // Perbarui waktu Terakhir Aktif di kolom 9
     try {
       userSheet.getRange(userRowIdx, 9).setValue(new Date().toISOString());
@@ -304,22 +312,38 @@ function apiForgotPassword(data) {
       }
     }
 
-    // Jika akun belum terdaftar
-    if (!userRow) {
-      return {
-        success: false,
-        message: 'Akun Anda belum terdaftar di aplikasi. Silakan periksa kembali email Anda atau buat akun baru terlebih dahulu.'
-      };
+    // Gunakan kata sandi sementara yang dikirim atau buat acak
+    var tempPassword = (data.tempPassword || '').trim();
+    if (!tempPassword) {
+      var randomCode = Math.floor(1000 + Math.random() * 9000);
+      tempPassword = 'Juz30-' + randomCode;
     }
 
-    var userName = userRow[1];
+    var userName = userRow ? userRow[1] : (data.name || email.split('@')[0] || 'Santri Hebat');
 
-    // 1. Buat Kata Sandi Sementara (Juz30-XXXX)
-    var randomCode = Math.floor(1000 + Math.random() * 9000);
-    var tempPassword = 'Juz30-' + randomCode;
-
-    // 2. Simpan di kolom 'Kata Sandi Sementara' (kolom 5)
-    userSheet.getRange(userRowIdx, 5).setValue(tempPassword);
+    // Jika akun belum terdaftar di spreadsheet, auto-sinkronkan agar akun langsung terdaftar
+    if (!userRow) {
+      var newUserId = 'id_' + new Date().getTime() + '_' + Math.floor(Math.random() * 10000);
+      var nowIso = new Date().toISOString();
+      userSheet.appendRow([
+        newUserId,
+        userName,
+        email,
+        tempPassword,
+        tempPassword,
+        (data.avatar || '🦁'),
+        'email',
+        nowIso,
+        nowIso
+      ]);
+    } else {
+      // Perbarui kata sandi aktif dan kata sandi sementara
+      userSheet.getRange(userRowIdx, 4).setValue(tempPassword);
+      userSheet.getRange(userRowIdx, 5).setValue(tempPassword);
+      try {
+        userSheet.getRange(userRowIdx, 9).setValue(new Date().toISOString());
+      } catch (e) {}
+    }
 
     // 3. Tautan Masuk Otomatis
     var appUrl = 'https://hafalan-juz30-two.vercel.app';
@@ -398,6 +422,22 @@ function apiUpdateProfile(data) {
       }
       userSheet.getRange(userRowIdx, 9).setValue(new Date().toISOString());
 
+      return { success: true, name: name, avatar: avatar };
+    } else if (email) {
+      // Auto-sinkronkan akun baru jika belum ada di spreadsheet
+      var newUserId = userId || ('id_' + new Date().getTime() + '_' + Math.floor(Math.random() * 10000));
+      var nowIso = new Date().toISOString();
+      userSheet.appendRow([
+        newUserId,
+        name || email.split('@')[0] || 'Santri Hebat',
+        email,
+        newPassword || '',
+        '',
+        avatar || '🦁',
+        'email',
+        nowIso,
+        nowIso
+      ]);
       return { success: true, name: name, avatar: avatar };
     }
 

@@ -1801,10 +1801,24 @@
               const storageKey = `juz30_account_${qEmail}`;
               let acc = null;
               try { acc = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch(e){}
+              if (!acc) {
+                try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_email_${qEmail}`) || 'null'); } catch(e){}
+              }
               if (acc && acc.user) {
                 acc.user.password = qKey;
                 localStorage.setItem(storageKey, JSON.stringify(acc));
+                localStorage.setItem(`juz30_account_uid_email_${qEmail}`, JSON.stringify(acc));
                 window.history.replaceState({}, document.title, window.location.pathname);
+
+                // Sinkronkan kata sandi baru ke Google Sheets di background
+                if (gasBridge.hasBackend()) {
+                  gasBridge.call('apiForgotPassword', {
+                    email: qEmail,
+                    tempPassword: qKey,
+                    name: acc.user.name || qEmail.split('@')[0]
+                  }).catch(e => console.warn("Sync quick_login to GAS:", e));
+                }
+
                 handleLoginSuccess('magic_' + Date.now(), acc.user, acc.progress || {}, acc.haditsProgress || {});
                 showToast("Berhasil masuk via tautan cepat! Silakan atur kata sandi baru Anda di profil 🔑");
                 setIsEditProfileOpen(true);
@@ -2473,8 +2487,15 @@
           // Sinkronkan sandi sementara ke Google Apps Script (Google Sheets) jika terhubung
           if (gasBridge.hasBackend()) {
             try {
-              await gasBridge.call('apiForgotPassword', { email: cleanEmail });
-            } catch (gasErr) {}
+              await gasBridge.call('apiForgotPassword', {
+                email: cleanEmail,
+                tempPassword: tempPass,
+                name: accountData?.user?.name || cleanEmail.split('@')[0],
+                avatar: accountData?.user?.avatar || '🦁'
+              });
+            } catch (gasErr) {
+              console.warn("GAS apiForgotPassword sync notice:", gasErr);
+            }
           }
 
           setForgotSent(true);
@@ -2490,133 +2511,181 @@
         setError("");
         setIsLoading(true);
 
+        const cleanEmail = (email || '').toLowerCase().trim();
+        const inputPass = (password || '').trim();
+
+        if (!cleanEmail || !inputPass) {
+          setError("Email dan kata sandi wajib diisi!");
+          setIsLoading(false);
+          return;
+        }
+
+        const userId = 'email_' + cleanEmail;
+        const uidStorageKey = `juz30_account_uid_${userId}`;
+        const emailStorageKey = `juz30_account_${cleanEmail}`;
+
+        // Cari akun lokal sebagai cadangan / sinkronisasi
+        let localAcc = null;
+        try { localAcc = JSON.parse(localStorage.getItem(uidStorageKey) || 'null'); } catch(e){}
+        if (!localAcc) {
+          try { localAcc = JSON.parse(localStorage.getItem(emailStorageKey) || 'null'); } catch(e){}
+        }
+        if (!localAcc) {
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && (k.startsWith('juz30_account_') || k.startsWith('juz30_account_uid_'))) {
+              try {
+                const parsed = JSON.parse(localStorage.getItem(k) || 'null');
+                if (
+                  parsed?.user?.email?.toLowerCase().trim() === cleanEmail ||
+                  parsed?.providerAccountId?.toLowerCase().trim() === cleanEmail ||
+                  parsed?.email?.toLowerCase().trim() === cleanEmail
+                ) {
+                  localAcc = parsed;
+                  break;
+                }
+              } catch(err){}
+            }
+          }
+        }
+
         try {
-          if (gasBridge.hasBackend()) {
-            if (isLogin) {
-              const res = await gasBridge.call('apiLogin', { email, password });
-              if (res && res.success) {
-                const cleanEmail = (email || '').toLowerCase().trim();
-                const userId = res.user.id || res.user.userId || ('email_' + cleanEmail);
-                let acc = null;
-                try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${userId}`) || 'null'); } catch(e){}
-                if (!acc) {
-                  try { acc = JSON.parse(localStorage.getItem(`juz30_account_${cleanEmail}`) || 'null'); } catch(e){}
-                }
-                const savedProg = acc?.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
-                const savedHadits = acc?.haditsProgress || JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+          if (isLogin) {
+            let gasSuccess = false;
+            let gasRes = null;
 
-                onLoginSuccess(res.token, res.user, savedProg, savedHadits);
-                return;
-              } else {
-                setError(res?.message || "Email atau kata sandi tidak cocok.");
-                setIsLoading(false);
-                return;
+            // 1. Cek login ke Google Sheets terlebih dahulu jika terhubung
+            if (gasBridge.hasBackend()) {
+              try {
+                gasRes = await gasBridge.call('apiLogin', { email: cleanEmail, password: inputPass });
+                if (gasRes && gasRes.success) {
+                  gasSuccess = true;
+                }
+              } catch (gasErr) {
+                console.warn("Koneksi GAS login gagal/timeout:", gasErr);
               }
-            } else {
-              const res = await gasBridge.call('apiRegister', { email, password, name, avatar, authProvider: 'email' });
-              if (res && res.success) {
-                const savedProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
-                const savedHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
-                onLoginSuccess(res.token, res.user, savedProg, savedHadits);
+            }
+
+            // Jika berhasil masuk lewat Google Sheets
+            if (gasSuccess && gasRes) {
+              const uId = gasRes.user?.id || gasRes.user?.userId || ('email_' + cleanEmail);
+              let acc = null;
+              try { acc = JSON.parse(localStorage.getItem(`juz30_account_uid_${uId}`) || 'null'); } catch(e){}
+              if (!acc) {
+                try { acc = JSON.parse(localStorage.getItem(`juz30_account_${cleanEmail}`) || 'null'); } catch(e){}
+              }
+              const savedProg = acc?.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+              const savedHadits = acc?.haditsProgress || JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+
+              // Perbarui juga data akun lokal dengan password terbaru
+              if (acc) {
+                if (!acc.user) acc.user = {};
+                acc.user.password = inputPass;
+                localStorage.setItem(`juz30_account_uid_${uId}`, JSON.stringify(acc));
+                localStorage.setItem(`juz30_account_${cleanEmail}`, JSON.stringify(acc));
+              }
+
+              onLoginSuccess(gasRes.token, gasRes.user, savedProg, savedHadits);
+              return;
+            }
+
+            // 2. Jika akun belum terdaftar di Google Sheets, tetapi ADA di penyimpanan lokal HP/browser ini
+            if (localAcc) {
+              const localPassword = localAcc.user?.password || localAcc.password;
+              const isMatch = (localPassword && localPassword === inputPass);
+
+              if (isMatch) {
+                const fullUser = localAcc.user || {
+                  userId: userId,
+                  email: cleanEmail,
+                  name: localAcc.name || cleanEmail.split('@')[0],
+                  avatar: localAcc.avatar || '🦁'
+                };
+                if (!fullUser.password) fullUser.password = inputPass;
+                const savedProg = localAcc.progress || JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+                const savedHadits = localAcc.haditsProgress || JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+
+                // Otomatis daftarkan / sinkronkan akun ke Google Sheets di background agar selanjutnya langsung tersimpan di spreadsheet
+                if (gasBridge.hasBackend()) {
+                  gasBridge.call('apiRegister', {
+                    email: cleanEmail,
+                    password: inputPass,
+                    name: fullUser.name || 'Santri Hebat',
+                    avatar: fullUser.avatar || '🦁',
+                    authProvider: 'email'
+                  }).catch(e => console.warn("Background auto-register ke GAS:", e));
+                }
+
+                onLoginSuccess('local_' + Date.now(), fullUser, savedProg, savedHadits);
                 return;
               } else {
-                setError(res?.message || "Pendaftaran gagal. Coba email lain.");
+                // Akun ada di perangkat ini, namun kata sandinya tidak cocok
+                setError("Kata sandi salah. Silakan periksa kembali atau gunakan tombol 'Lupa Password?'.");
                 setIsLoading(false);
                 return;
               }
             }
+
+            // 3. Akun benar-benar belum terdaftar baik di Google Sheets maupun di perangkat ini
+            setError(gasRes?.message || "Akun Anda belum terdaftar di aplikasi. Silakan periksa kembali email Anda atau buat akun baru terlebih dahulu.");
+            setIsLoading(false);
+            return;
           } else {
-            const userEmail = (email || '').toLowerCase().trim();
-            const userId = 'email_' + userEmail;
-            const uidStorageKey = `juz30_account_uid_${userId}`;
-            const emailStorageKey = userEmail ? `juz30_account_${userEmail}` : null;
-            let accountData = null;
+            // Mode Buat Akun / Daftar Baru
+            let registerSuccess = false;
+            let regRes = null;
 
-            if (userEmail) {
+            if (gasBridge.hasBackend()) {
               try {
-                accountData = JSON.parse(localStorage.getItem(uidStorageKey) || 'null');
-              } catch (e) {}
-              if (!accountData && emailStorageKey) {
-                try {
-                  accountData = JSON.parse(localStorage.getItem(emailStorageKey) || 'null');
-                } catch (e) {}
-              }
-            }
-
-            if (isLogin) {
-              // Validasi jika akun belum terdaftar
-              if (!accountData) {
-                setError("Akun belum terdaftar. Silakan pilih 'Daftar Akun Baru' di bawah terlebih dahulu.");
-                setIsLoading(false);
-                return;
-              }
-              // Validasi kata sandi jika sudah ada akun tersimpan
-              if (accountData && accountData.user?.password) {
-                if (accountData.user.password !== password) {
-                  setError("Kata sandi salah. Silakan periksa kembali.");
-                  setIsLoading(false);
-                  return;
+                regRes = await gasBridge.call('apiRegister', { email: cleanEmail, password: inputPass, name: (name || '').trim(), avatar, authProvider: 'email' });
+                if (regRes && regRes.success) {
+                  registerSuccess = true;
                 }
+              } catch (gasErr) {
+                console.warn("GAS register call error:", gasErr);
               }
             }
 
-            if (!accountData) {
-              accountData = {
-                userId: userId,
-                providerAccountId: userEmail,
-                authProvider: 'email',
-                user: { userId, providerAccountId: userEmail, name: name || "Santri Hebat", avatar, email: userEmail, password, authProvider: 'email' },
-                progress: {},
-                haditsProgress: {}
-              };
+            const savedProg = JSON.parse(localStorage.getItem('juz30_local_progress') || '{}');
+            const savedHadits = JSON.parse(localStorage.getItem('juz30_hadits_progress') || '{}');
+
+            if (registerSuccess && regRes) {
+              onLoginSuccess(regRes.token, regRes.user, savedProg, savedHadits);
+              return;
+            } else if (regRes && !regRes.success && regRes.message?.includes('sudah terdaftar')) {
+              setError(regRes.message);
+              setIsLoading(false);
+              return;
             } else {
-              if (!isLogin && password) {
-                accountData.user.password = password;
-              }
-              if (!accountData.userId) accountData.userId = userId;
-              if (!accountData.user.userId) accountData.user.userId = userId;
-            }
-
-            const serialized = JSON.stringify(accountData);
-            if (uidStorageKey) localStorage.setItem(uidStorageKey, serialized);
-            if (emailStorageKey) localStorage.setItem(emailStorageKey, serialized);
-
-            if (userEmail) {
+              // Jika server GAS offline / terkendala, tetap izinkan registrasi lokal
+              const fullUser = {
+                userId: userId,
+                providerAccountId: cleanEmail,
+                name: (name || '').trim() || "Santri Hebat",
+                avatar: avatar || '🦁',
+                email: cleanEmail,
+                password: inputPass,
+                authProvider: 'email'
+              };
+              const newAccountData = {
+                userId: userId,
+                providerAccountId: cleanEmail,
+                authProvider: 'email',
+                user: fullUser,
+                progress: savedProg,
+                haditsProgress: savedHadits
+              };
+              localStorage.setItem(uidStorageKey, JSON.stringify(newAccountData));
+              localStorage.setItem(emailStorageKey, JSON.stringify(newAccountData));
               localStorage.setItem('juz30_current_userid', userId);
-              localStorage.setItem('juz30_current_email', userEmail);
-            }
+              localStorage.setItem('juz30_current_email', cleanEmail);
 
-            // Sinkronisasi otomatis ke Firebase Auth di background
-            if (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length) {
-              try {
-                const auth = firebase.auth();
-                if (!isLogin && password) {
-                  auth.createUserWithEmailAndPassword(userEmail, password)
-                    .then(cred => {
-                      if (cred?.user && name) cred.user.updateProfile({ displayName: name }).catch(() => {});
-                    })
-                    .catch(err => {
-                      if (err.code === 'auth/email-already-in-use') {
-                        auth.signInWithEmailAndPassword(userEmail, password).catch(() => {});
-                      }
-                    });
-                } else if (isLogin && password) {
-                  auth.signInWithEmailAndPassword(userEmail, password)
-                    .catch(err => {
-                      if (err.code === 'auth/user-not-found') {
-                        auth.createUserWithEmailAndPassword(userEmail, password).catch(() => {});
-                      }
-                    });
-                }
-              } catch (syncErr) {
-                console.warn("Firebase Auth sync notice:", syncErr);
-              }
+              onLoginSuccess('local_' + Date.now(), fullUser, savedProg, savedHadits);
+              return;
             }
-
-            onLoginSuccess('local_token_' + Date.now(), accountData.user, accountData.progress || {}, accountData.haditsProgress || {});
           }
         } catch (err) {
-          setError("Gagal terhubung ke Cloud. Silakan masuk via Akun Tamu.");
+          setError("Gagal memproses masuk: " + (err.message || "Silakan coba lagi."));
         } finally {
           setIsLoading(false);
         }
